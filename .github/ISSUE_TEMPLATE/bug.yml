@@ -1,0 +1,38 @@
+name: Bug
+description: A file parsed wrongly, a valid file rejected, or a panic.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: hpt-parser version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: schema
+    attributes:
+      label: Data dictionary version
+      options: ["2.0.0", "2.1.0", "2.2.0", "3.0.0"]
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: Input
+      description: The smallest file that shows the problem. Paste it or attach it.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+      description: What this crate returns, or the panic message.
+    validations:
+      required: true

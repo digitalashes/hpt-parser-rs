@@ -1,0 +1,4 @@
+contact_links:
+  - name: The file format
+    url: https://github.com/CMSgov/hospital-price-transparency
+    about: The data dictionary comes from CMS; raise changes to the format there.

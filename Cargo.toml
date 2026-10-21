@@ -1,0 +1,22 @@
+[package]
+name = "hpt-parser"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Streaming parser for CMS Hospital Price Transparency machine-readable files"
+license = "CC0-1.0"
+repository = "https://github.com/digitalashes/hpt-parser-rs"
+keywords = ["cms", "price-transparency", "healthcare", "hospital", "parser"]
+categories = ["parser-implementations"]
+include = ["/src", "/README.md", "/LICENSE"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+panic = "warn"
+dbg_macro = "warn"
+todo = "warn"
+allow_attributes_without_reason = "warn"
