@@ -1,0 +1,6 @@
+hospital_name,last_updated_on,version,hospital_location,hospital_address,license_number|NY,"To the best of its knowledge and belief, the hospital has included all applicable standard charge information in accordance with the requirements of 45 CFR 180.50, and the information encoded is true, accurate, and complete as of the date indicated."
+Lakeside Medical Center,2025-01-15,2.2.0,Lakeside Medical Center,"100 Lake Rd, Albany, NY 12207",H-0042,TRUE
+description,code|1,code|1|type,modifiers,setting,drug_unit_of_measurement,drug_type_of_measurement,standard_charge|gross,standard_charge|discounted_cash,payer_name,plan_name,standard_charge|negotiated_dollar,standard_charge|negotiated_percentage,standard_charge|negotiated_algorithm,estimated_amount,standard_charge|methodology,standard_charge|min,standard_charge|max,additional_generic_notes
+Ondansetron injection,J2405,HCPCS,,outpatient,2,ME,45.00,36.00,Acme Health,Gold PPO,30.00,,,,fee schedule,28.00,34.00,
+Knee arthroscopy,29881,CPT,50 | LT,outpatient,,,4200,3360,Acme Health,Gold PPO,,75,,3150.00,percent of total billed charges,2900,3500,
+Bilateral procedure,,,50,outpatient,,,,,Acme Health,Gold PPO,,150,,,other,,,Modifier 50 pays 150 percent of the fee schedule

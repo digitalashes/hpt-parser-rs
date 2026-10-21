@@ -1,0 +1,8 @@
+hospital_name,last_updated_on,version,hospital_location,hospital_address,license_number | CA,"To the best of its knowledge and belief, the hospital has included all applicable standard charge information in accordance with the requirements of 45 CFR 180.50, and the information encoded is true, accurate, and complete as of the date indicated."
+West Mercy Hospital,2024-07-01,2.0.0,West Mercy Hospital|West Mercy Surgical Center,"12 Main Street, Fullerton, CA 92832|23 Ocean Ave, San Jose, CA 94088",50056,true
+description,code|1,code|1|type,code|2,code|2|type,setting,billing_class,standard_charge|gross,standard_charge|discounted_cash,payer_name,plan_name,standard_charge|negotiated_dollar,standard_charge|negotiated_percentage,standard_charge|negotiated_algorithm,standard_charge|methodology,standard_charge|min,standard_charge|max,additional_generic_notes
+Major hip and knee joint replacement,470,MS-DRG,175869,LOCAL,inpatient,facility,25000,20000,Platform Health Insurance,PPO,20000,,,case rate,18000,22000,
+Major hip and knee joint replacement,470,MS-DRG,175869,LOCAL,inpatient,facility,25000,20000,Region Health,HMO,,60,,percent of total billed charges,18000,22000,Only for members
+
+Office visit,99213,,,,outpatient,professional,150,120,Platform Health Insurance,PPO,110.25,,,fee schedule,100,130,
+Self-pay supplies,A4550,HCPCS,,,outpatient,facility,15,12,,,,,,,12,15,Cash price only

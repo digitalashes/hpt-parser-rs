@@ -1,0 +1,1 @@
+{"1":{"rows":[["a"],["b\"\r"]],"errors":[[1,"InvalidQuotes"],[1,"MissingQuotes"]]},"1024":{"rows":[["a"],["b\"\r"]],"errors":[[1,"InvalidQuotes"],[1,"MissingQuotes"]]},"65536":{"rows":[["a"],["b\"\r"]],"errors":[[1,"InvalidQuotes"],[1,"MissingQuotes"]]}}
