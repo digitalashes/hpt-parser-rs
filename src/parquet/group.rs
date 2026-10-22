@@ -2,21 +2,34 @@
 
 use crate::Error;
 use crate::config::{Column, Type, Value};
+use ::parquet::column::page::{CompressedPage, PageWriteSpec, PageWriter};
+use ::parquet::column::writer::{ColumnWriter, get_column_writer, get_typed_column_writer_mut};
 use ::parquet::data_type::{
     BoolType, ByteArray, ByteArrayType, DataType, DoubleType, Int32Type, Int64Type,
 };
-use ::parquet::file::writer::{SerializedColumnWriter, SerializedFileWriter};
-use std::io::Write;
+use ::parquet::file::properties::WriterPropertiesPtr;
+use ::parquet::file::writer::{SerializedFileWriter, SerializedPageWriter, TrackedWrite};
+use ::parquet::schema::types::ColumnDescPtr;
+use bytes::Bytes;
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex, PoisonError};
 
-/// Rows buffered per column until [`Group::flush`] writes them as one row group.
-///
-/// ponytail: memory is `row_group_size` rows of raw values. The upgrade is a `PageWriter`
-/// per column over an in-memory buffer (`get_column_writer`), encoding and compressing
-/// pages as rows come, appended with `SerializedRowGroupWriter::append_column` at flush;
-/// `push` and `flush` stay as they are.
+/// The row group being built. Rows are buffered per column for a batch of
+/// `write_batch_size` rows, then encoded and compressed into pages kept in memory; at
+/// [`Group::flush`] the pages go to the file as one row group.
 pub(super) struct Group {
-    columns: Vec<Buffer>,
+    columns: Vec<Chunk>,
+    properties: WriterPropertiesPtr,
     rows: usize,
+    batch: usize,
+}
+
+/// A column chunk: the batch not yet encoded, the writer that encodes it and its pages.
+struct Chunk {
+    buffer: Buffer,
+    descr: ColumnDescPtr,
+    pages: Pages,
+    writer: ColumnWriter<'static>,
 }
 
 /// A column's values with their definition levels. Nulls have a level and no value.
@@ -35,22 +48,73 @@ enum Values {
     List(Vec<ByteArray>, Vec<i16>),
 }
 
+/// A column chunk's encoded pages, shared with the page writer inside its column writer
+/// (which gives back nothing but metadata when it closes).
+#[derive(Clone, Default)]
+struct Pages(Arc<Mutex<Vec<u8>>>);
+
+impl Write for Pages {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Lays pages out as the file writer does, at offsets from the chunk's start.
+struct PageSink(TrackedWrite<Pages>);
+
+impl PageWriter for PageSink {
+    fn write_page(&mut self, page: CompressedPage) -> ::parquet::errors::Result<PageWriteSpec> {
+        SerializedPageWriter::new(&mut self.0).write_page(page)
+    }
+
+    fn close(&mut self) -> ::parquet::errors::Result<()> {
+        Ok(self.0.flush()?)
+    }
+}
+
+/// A writer whose pages go to `pages`, at offsets counted from its own first page.
+fn column_writer(
+    pages: &Pages,
+    descr: &ColumnDescPtr,
+    properties: &WriterPropertiesPtr,
+) -> ColumnWriter<'static> {
+    let sink = Box::new(PageSink(TrackedWrite::new(pages.clone())));
+    get_column_writer(descr.clone(), properties.clone(), sink)
+}
+
 impl Group {
-    pub(super) fn new(columns: &[Column]) -> Self {
-        let columns = (columns.iter())
-            .map(|c| Buffer {
-                values: match c.kind {
+    /// `descrs`: the schema's leaf columns, one per column.
+    pub(super) fn new(
+        columns: &[Column],
+        descrs: &[ColumnDescPtr],
+        properties: &WriterPropertiesPtr,
+    ) -> Self {
+        let columns = (columns.iter().zip(descrs))
+            .map(|(c, descr)| {
+                let pages = Pages::default();
+                let writer = column_writer(&pages, descr, properties);
+                let values = match c.kind {
                     Type::String | Type::Json => Values::Bytes(Vec::new()),
                     Type::F64 => Values::F64(Vec::new()),
                     Type::I64 => Values::I64(Vec::new()),
                     Type::Bool => Values::Bool(Vec::new()),
                     Type::Date => Values::Date(Vec::new()),
                     Type::List => Values::List(Vec::new(), Vec::new()),
-                },
-                def: Vec::new(),
+                };
+                Chunk {
+                    buffer: Buffer { values, def: Vec::new() },
+                    descr: descr.clone(),
+                    pages,
+                    writer,
+                }
             })
             .collect();
-        Group { columns, rows: 0 }
+        Group { columns, properties: properties.clone(), rows: 0, batch: 0 }
     }
 
     pub(super) fn len(&self) -> usize {
@@ -58,15 +122,39 @@ impl Group {
     }
 
     /// One row: a value per column, in the columns' order.
-    pub(super) fn push(&mut self, row: impl Iterator<Item = Value>) {
-        for (buffer, value) in self.columns.iter_mut().zip(row) {
-            buffer.push(value);
+    pub(super) fn push(&mut self, row: impl Iterator<Item = Value>) -> Result<(), Error> {
+        for (chunk, value) in self.columns.iter_mut().zip(row) {
+            chunk.buffer.push(value);
         }
         self.rows += 1;
+        self.batch += 1;
+        if self.batch == self.properties.write_batch_size() {
+            self.encode()?;
+        }
+        Ok(())
     }
 
-    /// Writes the rows as a row group and clears the buffers, keeping their capacity.
-    /// Nothing is written when there are no rows.
+    /// Encodes the buffered batch and clears the buffers, keeping their capacity.
+    fn encode(&mut self) -> Result<(), Error> {
+        for c in &mut self.columns {
+            let def = &c.buffer.def;
+            let w = &mut c.writer;
+            match &mut c.buffer.values {
+                Values::Bytes(v) => write::<ByteArrayType>(w, v, def, None)?,
+                Values::List(v, rep) => write::<ByteArrayType>(w, v, def, Some(rep))?,
+                Values::F64(v) => write::<DoubleType>(w, v, def, None)?,
+                Values::I64(v) => write::<Int64Type>(w, v, def, None)?,
+                Values::Bool(v) => write::<BoolType>(w, v, def, None)?,
+                Values::Date(v) => write::<Int32Type>(w, v, def, None)?,
+            }
+            c.buffer.def.clear();
+        }
+        self.batch = 0;
+        Ok(())
+    }
+
+    /// Writes the rows as a row group and starts the next one. Nothing is written when
+    /// there are no rows.
     pub(super) fn flush<W: Write + Send>(
         &mut self,
         file: &mut SerializedFileWriter<W>,
@@ -74,20 +162,14 @@ impl Group {
         if self.rows == 0 {
             return Ok(());
         }
+        self.encode()?;
         let mut group = file.next_row_group()?;
-        for b in &mut self.columns {
-            let mut column = group.next_column()?.expect("the schema has a column per buffer");
-            let def = &b.def;
-            match &mut b.values {
-                Values::Bytes(v) => write::<ByteArrayType>(&mut column, v, def, None)?,
-                Values::List(v, rep) => write::<ByteArrayType>(&mut column, v, def, Some(rep))?,
-                Values::F64(v) => write::<DoubleType>(&mut column, v, def, None)?,
-                Values::I64(v) => write::<Int64Type>(&mut column, v, def, None)?,
-                Values::Bool(v) => write::<BoolType>(&mut column, v, def, None)?,
-                Values::Date(v) => write::<Int32Type>(&mut column, v, def, None)?,
-            }
-            column.close()?;
-            b.def.clear();
+        for c in &mut self.columns {
+            let writer = column_writer(&c.pages, &c.descr, &self.properties);
+            let close = std::mem::replace(&mut c.writer, writer).close()?;
+            let pages =
+                std::mem::take(&mut *c.pages.0.lock().unwrap_or_else(PoisonError::into_inner));
+            group.append_column(&Bytes::from(pages), close)?;
         }
         group.close()?;
         self.rows = 0;
@@ -95,14 +177,18 @@ impl Group {
     }
 }
 
-/// Writes one column's values and levels, then clears the values and the repetition levels.
+/// Encodes one column's values and levels, then clears the values and the repetition levels.
 fn write<T: DataType>(
-    column: &mut SerializedColumnWriter<'_>,
+    writer: &mut ColumnWriter<'static>,
     values: &mut Vec<T::T>,
     def: &[i16],
     rep: Option<&mut Vec<i16>>,
 ) -> Result<(), Error> {
-    column.typed::<T>().write_batch(values, Some(def), rep.as_deref().map(Vec::as_slice))?;
+    get_typed_column_writer_mut::<T>(writer).write_batch(
+        values,
+        Some(def),
+        rep.as_deref().map(Vec::as_slice),
+    )?;
     values.clear();
     if let Some(rep) = rep {
         rep.clear();

@@ -16,7 +16,7 @@ use ::parquet::basic::{
 use ::parquet::file::metadata::KeyValue;
 use ::parquet::file::properties::WriterProperties;
 use ::parquet::file::writer::SerializedFileWriter;
-use ::parquet::schema::types::{Type as Schema, TypePtr};
+use ::parquet::schema::types::{SchemaDescriptor, Type as Schema, TypePtr};
 use group::Group;
 use std::fs::File;
 use std::io::Read;
@@ -161,7 +161,8 @@ pub fn write<R: Read>(
             SerializedFileWriter::new(File::create(&path)?, schema.clone(), properties.clone())?;
         Ok(Open { chunk: Chunk { path, index, records: 0 }, writer })
     };
-    let mut group = Group::new(&config.columns);
+    let descr = SchemaDescriptor::new(schema.clone());
+    let mut group = Group::new(&config.columns, descr.columns(), &properties);
     let mut file: Option<Open> = None;
     let mut summary = Summary::default();
     let mut first = None;
@@ -177,7 +178,7 @@ pub fn write<R: Read>(
             Some(f) => f,
             None => file.insert(open(summary.chunks + 1)?),
         };
-        group.push(config.columns.iter().map(|c| c.value(&record, metadata)));
+        group.push(config.columns.iter().map(|c| c.value(&record, metadata)))?;
         f.chunk.records += 1;
         if group.len() == output.row_group_size {
             group.flush(&mut f.writer)?;
