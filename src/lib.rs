@@ -53,6 +53,7 @@ pub enum Format {
 
 /// The file's layout, known once the header is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "parquet", derive(serde::Serialize), serde(rename_all = "lowercase"))]
 pub enum Layout {
     /// CSV with `payer_name` and `plan_name` columns: one row per item and payer/plan.
     Tall,
@@ -157,6 +158,7 @@ pub struct Payer {
 
 /// The file's header. Lists come from `|`-separated CSV cells or JSON arrays.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "parquet", derive(serde::Serialize))]
 pub struct Metadata {
     pub layout: Option<Layout>,
     /// CSV and JSON `version`.
@@ -193,6 +195,7 @@ pub struct Metadata {
 
 /// One JSON `modifier_information` entry.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "parquet", derive(serde::Serialize))]
 pub struct ModifierInfo {
     pub code: Option<String>,
     pub description: Option<String>,
@@ -203,6 +206,7 @@ pub struct ModifierInfo {
 
 /// One `modifier_payer_information` entry.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "parquet", derive(serde::Serialize))]
 pub struct ModifierPayer {
     pub name: Option<String>,
     pub plan: Option<String>,

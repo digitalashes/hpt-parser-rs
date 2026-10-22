@@ -2,8 +2,10 @@
 
 use crate::Error;
 use crate::config::{Column, Type, Value};
-use ::parquet::data_type::{BoolType, ByteArray, ByteArrayType, DoubleType, Int32Type, Int64Type};
-use ::parquet::file::writer::SerializedFileWriter;
+use ::parquet::data_type::{
+    BoolType, ByteArray, ByteArrayType, DataType, DoubleType, Int32Type, Int64Type,
+};
+use ::parquet::file::writer::{SerializedColumnWriter, SerializedFileWriter};
 use std::io::Write;
 
 /// Rows buffered per column until [`Group::flush`] writes them as one row group.
@@ -17,12 +19,10 @@ pub(super) struct Group {
     rows: usize,
 }
 
-/// A column's values with their definition levels; a list column also has repetition
-/// levels. Nulls have a level and no value.
+/// A column's values with their definition levels. Nulls have a level and no value.
 struct Buffer {
     values: Values,
     def: Vec<i16>,
-    rep: Vec<i16>,
 }
 
 enum Values {
@@ -31,8 +31,8 @@ enum Values {
     I64(Vec<i64>),
     Bool(Vec<bool>),
     Date(Vec<i32>),
-    /// The elements of every row's list, one after another.
-    List(Vec<ByteArray>),
+    /// The elements of every row's list, one after another, and their repetition levels.
+    List(Vec<ByteArray>, Vec<i16>),
 }
 
 impl Group {
@@ -45,10 +45,9 @@ impl Group {
                     Type::I64 => Values::I64(Vec::new()),
                     Type::Bool => Values::Bool(Vec::new()),
                     Type::Date => Values::Date(Vec::new()),
-                    Type::List => Values::List(Vec::new()),
+                    Type::List => Values::List(Vec::new(), Vec::new()),
                 },
                 def: Vec::new(),
-                rep: Vec::new(),
             })
             .collect();
         Group { columns, rows: 0 }
@@ -78,37 +77,37 @@ impl Group {
         let mut group = file.next_row_group()?;
         for b in &mut self.columns {
             let mut column = group.next_column()?.expect("the schema has a column per buffer");
-            let (def, rep) = (Some(&b.def[..]), Some(&b.rep[..]).filter(|r| !r.is_empty()));
+            let def = &b.def;
             match &mut b.values {
-                Values::Bytes(v) | Values::List(v) => {
-                    column.typed::<ByteArrayType>().write_batch(v, def, rep)?;
-                    v.clear();
-                }
-                Values::F64(v) => {
-                    column.typed::<DoubleType>().write_batch(v, def, rep)?;
-                    v.clear();
-                }
-                Values::I64(v) => {
-                    column.typed::<Int64Type>().write_batch(v, def, rep)?;
-                    v.clear();
-                }
-                Values::Bool(v) => {
-                    column.typed::<BoolType>().write_batch(v, def, rep)?;
-                    v.clear();
-                }
-                Values::Date(v) => {
-                    column.typed::<Int32Type>().write_batch(v, def, rep)?;
-                    v.clear();
-                }
+                Values::Bytes(v) => write::<ByteArrayType>(&mut column, v, def, None)?,
+                Values::List(v, rep) => write::<ByteArrayType>(&mut column, v, def, Some(rep))?,
+                Values::F64(v) => write::<DoubleType>(&mut column, v, def, None)?,
+                Values::I64(v) => write::<Int64Type>(&mut column, v, def, None)?,
+                Values::Bool(v) => write::<BoolType>(&mut column, v, def, None)?,
+                Values::Date(v) => write::<Int32Type>(&mut column, v, def, None)?,
             }
             column.close()?;
             b.def.clear();
-            b.rep.clear();
         }
         group.close()?;
         self.rows = 0;
         Ok(())
     }
+}
+
+/// Writes one column's values and levels, then clears the values and the repetition levels.
+fn write<T: DataType>(
+    column: &mut SerializedColumnWriter<'_>,
+    values: &mut Vec<T::T>,
+    def: &[i16],
+    rep: Option<&mut Vec<i16>>,
+) -> Result<(), Error> {
+    column.typed::<T>().write_batch(values, Some(def), rep.as_deref().map(Vec::as_slice))?;
+    values.clear();
+    if let Some(rep) = rep {
+        rep.clear();
+    }
+    Ok(())
 }
 
 impl Buffer {
@@ -117,20 +116,20 @@ impl Buffer {
             // Levels of `optional group (LIST) { repeated group list { optional element } }`:
             // 0 null list, 1 empty list, 3 an element; repetition 1 for every element but
             // a row's first.
-            (Values::List(v), Value::List(items)) => {
+            (Values::List(v, rep), Value::List(items)) => {
                 if items.is_empty() {
                     self.def.push(1);
-                    self.rep.push(0);
+                    rep.push(0);
                 }
                 for (i, s) in items.into_iter().enumerate() {
                     v.push(s.into_bytes().into());
                     self.def.push(3);
-                    self.rep.push(i16::from(i > 0));
+                    rep.push(i16::from(i > 0));
                 }
                 return;
             }
-            (Values::List(_), _) => {
-                self.rep.push(0);
+            (Values::List(_, rep), _) => {
+                rep.push(0);
                 0
             }
             (Values::Bytes(v), Value::Text(s)) => {

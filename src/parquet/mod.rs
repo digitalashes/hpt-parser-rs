@@ -18,7 +18,6 @@ use ::parquet::file::properties::WriterProperties;
 use ::parquet::file::writer::SerializedFileWriter;
 use ::parquet::schema::types::{Type as Schema, TypePtr};
 use group::Group;
-use serde_json::json;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -265,29 +264,5 @@ fn field(c: &Column) -> ::parquet::errors::Result<Schema> {
 
 /// The metadata as JSON, named as the `metadata.*` fields.
 fn footer(m: &Metadata) -> String {
-    let modifiers: Vec<_> = (m.modifiers.iter())
-        .map(|x| {
-            let payers: Vec<_> = (x.payers.iter())
-                .map(|p| json!({"name": p.name, "plan": p.plan, "description": p.description}))
-                .collect();
-            json!({"code": x.code, "description": x.description, "setting": x.setting, "payers": payers})
-        })
-        .collect();
-    json!({
-        "layout": m.layout.map(crate::Layout::name),
-        "version": m.version,
-        "hospital_name": m.hospital_name,
-        "last_updated_on": m.last_updated_on,
-        "location_name": m.location_name,
-        "hospital_address": m.hospital_address,
-        "license_number": m.license_number,
-        "license_state": m.license_state,
-        "type_2_npi": m.type_2_npi,
-        "attestation": m.attestation,
-        "attestation_confirmed": m.attestation_confirmed,
-        "attester_name": m.attester_name,
-        "modifiers": modifiers,
-        "extra": m.extra,
-    })
-    .to_string()
+    serde_json::to_string(m).expect("strings, lists and maps of them always serialize")
 }
