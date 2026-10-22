@@ -155,10 +155,10 @@ struct Open {
 /// after the whole input is read), then `on_chunk` gets it. No records at all still give one
 /// file with zero rows.
 ///
-/// With plugins, records are read in batches of 512: the `[[filter]]` plugins drop records
-/// from a batch (dropped records count for nothing), then each plugin function is called
-/// once for the batch. The `[[metadata]]` plugins run once after the last record, and the
-/// fields they add are in the last file's footer.
+/// With a `[[filter]]` or a column with plugins, records are read in batches of 512: the
+/// filters drop records from a batch (dropped records count for nothing), then each plugin
+/// function is called once for the batch. The `[[metadata]]` plugins run once after the last
+/// record, and the fields they add are in the last file's footer.
 ///
 /// # Errors
 ///
@@ -198,8 +198,9 @@ pub fn write<R: Read>(
     #[cfg(not(feature = "plugins"))]
     let call: &mut Call = &mut |_, _| unreachable!("no plugins");
     let mut first = None;
-    if config.plugins.is_empty() {
-        // Record by record: even a batch of one costs chi 6% (8.2 s, 8.7 s).
+    // Without a filter or a column with plugins (`[[metadata]]` alone runs at the end),
+    // record by record: even a batch of one costs chi 6% (8.2 s, 8.7 s).
+    if config.filters.is_empty() && !config.columns.iter().any(Column::has_plugins) {
         while let Some(record) = parser.next() {
             let record = record?;
             let metadata = parser.metadata();
