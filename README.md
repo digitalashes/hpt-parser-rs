@@ -51,6 +51,9 @@ hpt-parser 123456789_hospital_standardcharges.csv
 # your own columns, a file per 5 million records
 hpt-parser standardcharges.json -c columns.toml -o out/charges.parquet --chunk-size 5000000
 
+# straight from the hospital's .zip (or a .gz): the one .csv or .json in it
+hpt-parser 123456789_hospital_standardcharges.zip
+
 # straight from the web
 curl -s https://example.org/standardcharges.csv | hpt-parser - --format csv -o charges.parquet
 
@@ -61,10 +64,10 @@ hpt-parser standardcharges.csv --metadata table
 
 | Option                     | Meaning                                                                                      |
 |----------------------------|----------------------------------------------------------------------------------------------|
-| `<INPUT>`                  | The file to read, or `-` for standard input.                                                 |
-| `-o, --output <PATH>`      | The Parquet file. Default: the input's name with `.parquet`, `out.parquet` for standard input. |
+| `<INPUT>`                  | The file to read (`.csv` or `.json`, or one of them in a `.gz` or a `.zip`), or `-` for standard input. |
+| `-o, --output <PATH>`      | The Parquet file. Default: the input's name with `.parquet` for `.csv`, `.json`, `.gz` or `.zip`; `out.parquet` for standard input. |
 | `-c, --config <PATH>`      | The output config. Default: the built-in one, every field as a string column.                |
-| `--format csv\|json`       | The input format. Default: by the extension; required for standard input.                    |
+| `--format csv\|json`       | The input format. Default: by the extension (in a `.zip`, the file's); required for standard input. |
 | `--compression <CODEC>`    | `none`, `snappy`, `gzip[:level]`, `lz4`, `zstd[:level]` or `brotli[:level]`. Default `zstd:3`. |
 | `--chunk-size <N>`         | Records per file, `0` for one file (the default). Files are `<stem>-00001.parquet`, ...      |
 | `--row-group-size <N>`     | Rows per row group, `0` for one per file. Default 256000.                                    |
@@ -391,8 +394,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Feature   | Default | Adds |
 |-----------|---------|------|
 | `config`  | yes     | The TOML config, its transforms and casts (`toml`, `serde`, `serde_json`). |
-| `parquet` | yes     | Parquet output and the `hpt-parser` binary (`parquet`, `bytes`). |
+| `parquet` | yes     | Parquet output (`parquet`, `bytes`). |
 | `plugins` | yes     | WASM plugins in the config (`extism`, on wasmtime). |
+| `cli`     | yes     | The `hpt-parser` binary, which reads `.gz` and `.zip` input too (`flate2`, `zip`). |
 
 Without default features the parser has no dependencies:
 `hpt-parser = { version = "0.1", default-features = false }`.

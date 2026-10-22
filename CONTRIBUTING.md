@@ -10,7 +10,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 ```
 
 CI also runs clippy and the tests without the default features (`--no-default-features`,
-and with `--features parquet` alone), and builds and runs the plugins in `examples/`.
+and with `--features cli` alone: the binary without plugins), and builds and runs the plugins in `examples/`.
 
 `tests/plugin/test.wasm` is the build of the test plugin, committed. After changing
 `tests/plugin/src/lib.rs`, rebuild it as [its README](tests/plugin/README.md) says (needs

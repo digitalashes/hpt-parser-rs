@@ -1,11 +1,13 @@
-//! The `hpt-parser` binary: usage errors, Parquet, chunks, metadata, notify events.
+//! The `hpt-parser` binary: usage errors, Parquet, .gz and .zip input, chunks, metadata,
+//! notify events.
 
-#![cfg(feature = "parquet")]
+#![cfg(feature = "cli")]
 #![expect(clippy::unwrap_used, reason = "test helpers")]
 
 use hpt_parser::{Format, Parser};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -56,6 +58,37 @@ fn usage() {
         assert_eq!(out.status.code(), Some(2), "{args:?}");
         assert!(text(&out.stderr).starts_with(&format!("error: {message}")), "{args:?}");
     }
+}
+
+#[test]
+fn packed() {
+    let dir = dir("cli-packed");
+    let csv = fs::read(TALL).unwrap();
+    let mut gz =
+        flate2::write::GzEncoder::new(File::create(dir.join("t.csv.gz")).unwrap(), <_>::default());
+    gz.write_all(&csv).unwrap();
+    gz.finish().unwrap();
+    let zip = |name: &str, files: &[&str]| {
+        let mut zip = zip::ZipWriter::new(File::create(dir.join(name)).unwrap());
+        for file in files {
+            zip.start_file(*file, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(&csv).unwrap();
+        }
+        zip.finish().unwrap();
+    };
+    zip("t.zip", &["__MACOSX/._t.csv", "t.csv"]);
+    zip("two.zip", &["t.csv", "u.json"]);
+    for name in ["t.csv.gz", "t.zip"] {
+        let _ = fs::remove_file(dir.join("t.parquet"));
+        let run = hpt_parser(&[dir.join(name).to_str().unwrap()]);
+        assert_eq!(text(&run.stderr), format!("1 chunks, {} records\n", records(TALL)), "{name}");
+        assert_eq!(rows(&dir.join("t.parquet")), records(TALL), "{name}");
+    }
+    let two = dir.join("two.zip");
+    let run = hpt_parser(&[two.to_str().unwrap()]);
+    assert_eq!(run.status.code(), Some(1));
+    let want = format!("error: {}: 2 .csv or .json files in it, not one\n", two.display());
+    assert_eq!(text(&run.stderr), want);
 }
 
 #[test]

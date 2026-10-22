@@ -27,7 +27,7 @@ jobs:
   features:
     strategy:
       matrix:
-        flags: ["--no-default-features --features parquet", "--no-default-features"]
+        flags: ["--no-default-features --features cli", "--no-default-features"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

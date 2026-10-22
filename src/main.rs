@@ -1,6 +1,7 @@
 //! `hpt-parser`: a CMS Hospital Price Transparency file to Parquet, or its metadata to
 //! standard output.
 
+use flate2::read::MultiGzDecoder;
 use hpt_parser::config::{self, BUILTIN, Config};
 use hpt_parser::parquet::{Output, parse_compression, write};
 use hpt_parser::{Format, Layout, Metadata, Parser};
@@ -21,13 +22,15 @@ Reads a CMS Hospital Price Transparency file (CSV tall or wide, JSON) and writes
 records to Parquet.
 
 Arguments:
-  <INPUT>                   the file to read, - for standard input
+  <INPUT>                   the file to read (.csv or .json, or one of them in a .gz or
+                            a .zip), - for standard input
 
 Options:
   -o, --output <PATH>       the Parquet file (default: <input stem>.parquet next to the
-                            input, out.parquet for standard input)
+                            input, without .gz or .zip; out.parquet for standard input)
   -c, --config <PATH>       the output config (default: the built-in one)
-      --format <FORMAT>     csv or json (default: by the input's extension)
+      --format <FORMAT>     csv or json (default: by the extension of the input, or of
+                            the file in the .zip)
       --compression <CODEC> none, snappy, gzip[:level], lz4, zstd[:level] or
                             brotli[:level] (default: zstd:3)
       --chunk-size <N>      records per file, 0 for one file (default: 0); the files
@@ -49,7 +52,8 @@ Exit codes: 0 done, 1 the input, config or output failed, 2 usage error.
 /// What to read, where to write and how.
 struct Args {
     input: OsString,
-    format: Format,
+    /// `None`: by the extension.
+    format: Option<Format>,
     output: PathBuf,
     config: Option<PathBuf>,
     /// `[output]` as the flags set it.
@@ -134,17 +138,16 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
     }
     let input = input.ok_or("missing <INPUT>")?;
     let stdin = input == "-";
-    let format = match format {
-        Some(format) => format,
-        None if stdin => return Err("standard input needs --format".into()),
-        None => match Path::new(&input).extension().map(std::ffi::OsStr::to_ascii_lowercase) {
-            Some(e) if e == "csv" => Format::Csv,
-            Some(e) if e == "json" => Format::Json,
-            _ => return Err(format!("{}: neither .csv nor .json, give --format", input.display())),
-        },
-    };
+    if stdin && format.is_none() {
+        return Err("standard input needs --format".into());
+    }
     let output = output.unwrap_or_else(|| {
-        if stdin { "out.parquet".into() } else { Path::new(&input).with_extension("parquet") }
+        let path = Path::new(&input);
+        match extension(path).as_str() {
+            _ if stdin => "out.parquet".into(),
+            "gz" | "zip" => path.with_extension("").with_extension("parquet"),
+            _ => path.with_extension("parquet"),
+        }
     });
     // The same file under another spelling would be truncated before it is read.
     if !stdin
@@ -159,6 +162,11 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
 fn exit(text: &str) -> ! {
     print(text);
     std::process::exit(0)
+}
+
+/// The extension, lowercase, empty when there is none.
+fn extension(path: &Path) -> String {
+    path.extension().unwrap_or_default().to_string_lossy().to_ascii_lowercase()
 }
 
 fn number<T: FromStr>(name: &str, value: &OsString) -> Result<T, String> {
@@ -178,7 +186,7 @@ fn run(args: &Args) -> Result<(), Box<dyn Error>> {
     output.apply(&config.output)?;
     output.apply(&args.flags)?;
     let mut notify = Notify::connect(args.notify.as_deref())?;
-    let result = open(args, &config).and_then(|parser| {
+    let result = open(args, &config, |parser, _| {
         let chunk_ready = |c: &hpt_parser::parquet::Chunk| {
             let path = c.path.display().to_string();
             let event = json!({"event": "chunk_ready", "path": path, "index": c.index, "records": c.records});
@@ -199,29 +207,63 @@ fn run(args: &Args) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn open(args: &Args, config: &Config) -> Result<Parser<Box<dyn Read>>, Box<dyn Error>> {
-    let input: Box<dyn Read> = if args.input == "-" {
-        Box::new(io::stdin().lock())
-    } else {
-        Box::new(File::open(&args.input).map_err(|e| format!("{}: {e}", args.input.display()))?)
+/// Calls `f` with a parser over the input, unpacked from a .gz or a .zip, and its format.
+fn open<T>(
+    args: &Args,
+    config: &Config,
+    f: impl FnOnce(Parser<Box<dyn Read + '_>>, Format) -> Result<T, Box<dyn Error>>,
+) -> Result<T, Box<dyn Error>> {
+    let parse = |input: Box<dyn Read + '_>, name: &Path| {
+        let format = match (args.format, extension(name).as_str()) {
+            (Some(format), _) => format,
+            (None, "csv") => Format::Csv,
+            (None, "json") => Format::Json,
+            _ => Err(format!("{}: neither .csv nor .json, give --format", name.display()))?,
+        };
+        f(Parser::new(input, format).with_aliases(config.aliases(format)), format)
     };
-    Ok(Parser::new(input, args.format).with_aliases(config.aliases(args.format)))
+    let path = Path::new(&args.input);
+    if args.input == "-" {
+        return parse(Box::new(io::stdin().lock()), path);
+    }
+    let failed = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let file = File::open(path).map_err(|e| failed(&e))?;
+    match extension(path).as_str() {
+        "gz" => parse(Box::new(MultiGzDecoder::new(file)), &path.with_extension("")),
+        "zip" => {
+            let mut zip = zip::ZipArchive::new(file).map_err(|e| failed(&e))?;
+            // A Mac's archive also has a `__MACOSX/` copy of each file's attributes.
+            let names: Vec<_> = (zip.file_names())
+                .filter_map(|n| Some(n.ok()?.into_owned()))
+                .filter(|n| matches!(extension(Path::new(n)).as_str(), "csv" | "json"))
+                .filter(|n| !n.starts_with("__MACOSX/"))
+                .collect();
+            let [name] = &names[..] else {
+                let n = names.len();
+                return Err(failed(&format!("{n} .csv or .json files in it, not one")).into());
+            };
+            let file = zip.by_name(name).map_err(|e| failed(&e))?;
+            parse(Box::new(file), Path::new(name))
+        }
+        _ => parse(Box::new(file), path),
+    }
 }
 
 fn metadata(args: &Args, config: &Config, show: Show) -> Result<(), Box<dyn Error>> {
-    let mut parser = open(args, config)?;
-    // A CSV file's metadata is complete after its header, a JSON file's may come after the
-    // charge items.
-    let records = if args.format == Format::Csv { 1 } else { usize::MAX };
-    for record in parser.by_ref().take(records) {
-        record?;
-    }
-    let m = parser.metadata();
-    print(&match show {
-        Show::Json => serde_json::to_string_pretty(m).expect("strings, lists and maps") + "\n",
-        Show::Table => table(m),
-    });
-    Ok(())
+    open(args, config, |mut parser, format| {
+        // A CSV file's metadata is complete after its header, a JSON file's may come after
+        // the charge items.
+        let records = if format == Format::Csv { 1 } else { usize::MAX };
+        for record in parser.by_ref().take(records) {
+            record?;
+        }
+        let m = parser.metadata();
+        print(&match show {
+            Show::Json => serde_json::to_string_pretty(m).expect("strings, lists and maps") + "\n",
+            Show::Table => table(m),
+        });
+        Ok(())
+    })
 }
 
 /// `name  value` lines, lists joined by `, `, empty fields left out.

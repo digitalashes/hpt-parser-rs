@@ -13,7 +13,7 @@ include = ["/src", "/skills", "/README.md", "/LICENSE"]
 [[bin]]
 name = "hpt-parser"
 path = "src/main.rs"
-required-features = ["parquet"]
+required-features = ["cli"]
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -33,16 +33,20 @@ serde_json = { version = "1.0.154", features = ["preserve_order"] }
 [dependencies]
 bytes = { version = "1.12.1", default-features = false, optional = true }
 extism = { version = "1.41", optional = true, default-features = false }
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"], optional = true }
 parquet = { version = "60.0.0", default-features = false, features = ["snap", "flate2-zlib-rs", "lz4", "zstd", "brotli"], optional = true }
 serde = { version = "1.0.229", features = ["derive"], optional = true }
 serde_json = { version = "1.0.154", optional = true, features = ["preserve_order", "raw_value"] }
 toml = { version = "1.1.8", optional = true }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
 
 [features]
-default = ["config", "parquet", "plugins"]
+default = ["config", "parquet", "plugins", "cli"]
 # The TOML output config with its transforms and casts.
 config = ["dep:toml", "dep:serde", "dep:serde_json"]
 # Parquet output files; the file's metadata goes to the footer as JSON.
 parquet = ["dep:parquet", "dep:bytes", "config"]
 # WASM plugins named in the config, called by the Parquet writer.
 plugins = ["dep:extism", "parquet"]
+# The `hpt-parser` binary, which also reads .gz and .zip input.
+cli = ["parquet", "dep:flate2", "dep:zip"]

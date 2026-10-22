@@ -21,6 +21,8 @@ hpt-parser --print-config > columns.toml              # the built-in config, to 
 
 - Exit 0 done, 1 input, config or output failed (`error: ...` on stderr), 2 usage.
 - `--format csv|json` is required for `-` (stdin); otherwise the extension decides.
+  A `.gz` or a `.zip` (with one `.csv` or `.json` in it) is read as it is, unpacked on
+  the fly; the default output name drops `.gz` or `.zip` too.
 - `--notify-socket <path>`: one JSON line per event on a unix socket someone listens on:
   `chunk_ready` (`path`, `index`, `records`), then `done` (`chunks`, `records`) or
   `error` (`message`). A `chunk_ready` file is complete and can be loaded at once.
@@ -50,7 +52,8 @@ let metadata = parser.metadata();                    // complete only now
   CMS ones.
 - `hpt_parser::parquet::write(parser, &config, &output, on_chunk)` is the command's
   writer; `Summary` has `chunks`, `records`, `late_metadata`.
-- Features, all default: `config` (TOML), `parquet` (writer, binary), `plugins` (WASM).
+- Features, all default: `config` (TOML), `parquet` (writer), `plugins` (WASM), `cli`
+  (the binary).
   `default-features = false` leaves the parser with no dependencies.
 
 ## Config and plugins
