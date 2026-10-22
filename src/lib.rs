@@ -33,6 +33,8 @@
 pub mod config;
 mod csv;
 mod json;
+#[cfg(feature = "parquet")]
+pub mod parquet;
 mod text;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -56,6 +58,18 @@ pub enum Layout {
     /// CSV with a column block per payer/plan: one row per item.
     Wide,
     Json,
+}
+
+impl Layout {
+    /// `tall`, `wide` or `json`.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Layout::Tall => "tall",
+            Layout::Wide => "wide",
+            Layout::Json => "json",
+        }
+    }
 }
 
 /// One charge item for one payer/plan.
@@ -217,6 +231,9 @@ pub enum Error {
     Config {
         message: String,
     },
+    /// Writing a Parquet file.
+    #[cfg(feature = "parquet")]
+    Parquet(::parquet::errors::ParquetError),
 }
 
 impl fmt::Display for Error {
@@ -228,6 +245,8 @@ impl fmt::Display for Error {
                 write!(f, "line {line}, column {column}: {message}")
             }
             Error::Config { message } => f.write_str(message),
+            #[cfg(feature = "parquet")]
+            Error::Parquet(e) => e.fmt(f),
         }
     }
 }
@@ -236,6 +255,8 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::Io(e) => Some(e),
+            #[cfg(feature = "parquet")]
+            Error::Parquet(e) => Some(e),
             _ => None,
         }
     }
@@ -244,6 +265,13 @@ impl std::error::Error for Error {
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
         Error::Io(e)
+    }
+}
+
+#[cfg(feature = "parquet")]
+impl From<::parquet::errors::ParquetError> for Error {
+    fn from(e: ::parquet::errors::ParquetError) -> Self {
+        Error::Parquet(e)
     }
 }
 

@@ -401,14 +401,7 @@ const FIELDS: &[(&str, Get)] = &[
     ("payer.count", |r, _| text(payer(r, |p| p.count.as_deref()))),
     ("payer.notes", |r, _| text(payer(r, |p| p.notes.as_deref()))),
     ("record.position", |r, _| Cell::Text(Some(Cow::Owned(r.position.to_string())))),
-    ("metadata.layout", |_, m| {
-        let layout = m.layout.map(|l| match l {
-            Layout::Tall => "tall",
-            Layout::Wide => "wide",
-            Layout::Json => "json",
-        });
-        Cell::Text(layout.map(Cow::Borrowed))
-    }),
+    ("metadata.layout", |_, m| text(m.layout.map(Layout::name))),
     ("metadata.version", |_, m| text(m.version.as_deref())),
     ("metadata.hospital_name", |_, m| text(m.hospital_name.as_deref())),
     ("metadata.last_updated_on", |_, m| text(m.last_updated_on.as_deref())),

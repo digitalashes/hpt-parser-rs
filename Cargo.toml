@@ -25,10 +25,14 @@ allow_attributes_without_reason = "warn"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 
 [dependencies]
+parquet = { version = "60.0.0", default-features = false, features = ["snap", "flate2-zlib-rs", "lz4", "zstd", "brotli"], optional = true }
 serde = { version = "1.0.229", features = ["derive"], optional = true }
+serde_json = { version = "1.0.154", optional = true }
 toml = { version = "1.1.8", optional = true }
 
 [features]
-default = ["config"]
+default = ["config", "parquet"]
 # The TOML output config with its transforms and casts.
 config = ["dep:toml", "dep:serde"]
+# Parquet output files; the file's metadata goes to the footer as JSON.
+parquet = ["dep:parquet", "dep:serde_json", "config"]
