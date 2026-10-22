@@ -411,6 +411,9 @@ fn alias_key(format: Format, name: &str) -> String {
 
 /// Queues a record per payer, all sharing the charge, or one with `payer: None` when there
 /// are none.
+// Without the hint an unrelated change once left it out of line in the JSON reader: nyp 4%
+// slower.
+#[inline]
 fn fan_out(
     pending: &mut VecDeque<Record>,
     charge: Charge,
