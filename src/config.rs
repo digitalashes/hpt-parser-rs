@@ -1199,4 +1199,17 @@ mod tests {
             assert_eq!(c.name, source.replace('.', "_"));
         }
     }
+
+    /// The README's Fields table names every field, in its group's row.
+    #[test]
+    fn readme_fields() {
+        let readme = include_str!("../README.md");
+        for name in Field::names() {
+            let (group, field) = name.split_once('.').unwrap();
+            let row = (readme.lines())
+                .find(|l| l.starts_with(&format!("| `{group}.*`")))
+                .unwrap_or_else(|| panic!("no README row for `{group}.*`"));
+            assert!(row.contains(&format!("`{field}`")), "README misses `{name}`");
+        }
+    }
 }

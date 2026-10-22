@@ -8,7 +8,7 @@ license = "CC0-1.0"
 repository = "https://github.com/digitalashes/hpt-parser-rs"
 keywords = ["cms", "price-transparency", "healthcare", "hospital", "parser"]
 categories = ["parser-implementations"]
-include = ["/src", "/README.md", "/LICENSE"]
+include = ["/src", "/skills", "/README.md", "/LICENSE"]
 
 [[bin]]
 name = "hpt-parser"

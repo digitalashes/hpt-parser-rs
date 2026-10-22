@@ -8,3 +8,14 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 ```
+
+`tests/plugin/test.wasm` is the build of the test plugin, committed. After changing
+`tests/plugin/src/lib.rs`, rebuild it as [its README](tests/plugin/README.md) says (needs
+`rustup target add wasm32-unknown-unknown`).
+
+`tests/real.rs` runs a real file, which is never committed:
+
+```sh
+HPT_FILE=<path> cargo test --release --test real -- --ignored --nocapture
+HPT_FILE=<path> HPT_OUT=out.parquet cargo test --release --test real -- --ignored --nocapture real_parquet
+```

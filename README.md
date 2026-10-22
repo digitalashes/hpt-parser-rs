@@ -262,8 +262,42 @@ plugin = "acme.source"        # adds fields to the metadata
   computed column took the run from 7.6 to 18 seconds. Read only the fields you use
   (typed structs, not a generic JSON value: that took 43 seconds).
 
-[`tests/plugin/src/lib.rs`](tests/plugin/src/lib.rs) is a plugin in Rust with a function
-for each hook.
+A filter in Rust, with `extism-pdk` and `serde` (derive) as dependencies and
+`crate-type = ["cdylib"]`:
+
+```rust,ignore
+use extism_pdk::{FnResult, Json, plugin_fn};
+use serde::{Deserialize, Serialize};
+
+#[derive(Deserialize)]
+struct Records {
+    records: Vec<Record>,
+}
+
+#[derive(Deserialize)]
+struct Record {
+    #[serde(rename = "charge.setting")]
+    setting: Option<String>,
+}
+
+#[derive(Serialize)]
+struct Keep {
+    keep: Vec<bool>,
+}
+
+#[plugin_fn]
+pub fn keep(Json(input): Json<Records>) -> FnResult<Json<Keep>> {
+    let keep = input.records.iter().map(|r| r.setting.as_deref() == Some("inpatient"));
+    Ok(Json(Keep { keep: keep.collect() }))
+}
+```
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo build --release --target wasm32-unknown-unknown   # target/wasm32-unknown-unknown/release/<name>.wasm
+```
+
+[`tests/plugin/src/lib.rs`](tests/plugin/src/lib.rs) has a function for each hook.
 
 ### What is in a Parquet file
 
