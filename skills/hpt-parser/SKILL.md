@@ -1,6 +1,6 @@
 ---
 name: hpt-parser
-description: Reading CMS Hospital Price Transparency files (CSV tall or wide, JSON) into records or Parquet with the hpt-parser crate or its command line. Use when writing code that calls hpt_parser::Parser or hpt_parser::parquet::write, writing an output config (TOML) or a plugin for it, or running the hpt-parser command.
+description: Reading CMS Hospital Price Transparency files (CSV tall or wide, JSON) into records or Parquet with the hpt-parser crate or its command line. Use when writing code that calls hpt_parser::Parser or hpt_parser::parquet::write, or running the hpt-parser command. For writing its TOML config or a plugin, use hpt-parser-config.
 ---
 
 # Using hpt-parser
@@ -51,60 +51,15 @@ let metadata = parser.metadata();                    // complete only now
 - Features, all default: `config` (TOML), `parquet` (writer, binary), `plugins` (WASM).
   `default-features = false` leaves the parser with no dependencies.
 
-## Config recipes
+## Config and plugins
 
-Fields are `charge.*`, `payer.*`, `metadata.*` (`metadata.extra.<key>` too) and
-`record.position`; the README lists them all. Transforms run in order, then the cast.
-
-```toml
-[[column]]                       # money as a number
-name = "negotiated"
-from = "payer.dollar"
-type = "f64"
-transform = ["money", { round = 2 }]
-
-[[column]]                       # CMS spelling of a value domain
-name = "setting"
-from = "charge.setting"
-type = "string"
-transform = [{ match = "setting", fuzzy = 0.8 }]
-
-[[column]]                       # a stable charge key
-name = "id"
-from = ["metadata.hospital_name", "charge.description", "payer.name", "payer.plan"]
-type = "string"
-transform = ["hash"]
-```
-
-## Plugins
-
-`[[plugin]]` (`name`, `path` relative to the config, `config` table) names an Extism
-module; its functions are `<name>.<function>`. Sandboxed: no files, network or WASI,
-60 s per call, 256 MiB.
-
-| Hook | Config | Gets | Answers |
-|---|---|---|---|
-| value transform | `transform = [{ plugin = "p.f" }]` | `{"values":[..]}` | `{"values":[..]}` |
-| computed column | `plugin = "p.f"` (and `fields`) in place of `from` | `{"records":[..]}` | `{"values":[..]}` |
-| filter | `[[filter]] plugin = "p.f"` (and `fields`) | `{"records":[..]}` | `{"keep":[bool]}` |
-| metadata | `[[metadata]] plugin = "p.f"` | the metadata object | `{"fields":{..}}` |
-
-- Up to 512 items a call; the answer has exactly one item per input, in order.
-- A record is flat, keyed by field name (`"charge.setting"`), only the fields with a
-  value. Codes are `[{"code":..,"type":..}]`.
-- Always set `fields = ["charge.setting", ...]` to what the function reads (`metadata.*`
-  allowed): without it every `charge.*`/`payer.*` field goes, long notes included, and
-  the JSON makes a run about 4x slower.
-- Deserialize into typed structs with only the fields you read: a generic JSON value
-  per record costs several times more.
-- `[[metadata]]` runs once at the end; its fields go to `extra` in the last footer.
+The output columns, their types and cleaning, aliases and WASM plugins: the
+`hpt-parser-config` skill.
 
 ## Pitfalls
 
 - A JSON file may put its header after the charge items: records read before it see
   empty metadata, so `metadata.*` columns are null in those rows and
   `Summary::late_metadata` is true. The last footer is complete.
-- A value that does not cast to the column's type is null, silently: check null counts
-  after a new config.
 - `record.position` is the CSV line a row starts on, or the JSON item's index; the
   records of one wide row or JSON item share it.
