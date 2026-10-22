@@ -8,6 +8,16 @@ use hpt_parser::{
 };
 use std::sync::Arc;
 
+/// One of the crate's structs with these fields and the rest default: they are
+/// `#[non_exhaustive]`, so no struct literal outside the crate.
+macro_rules! with {
+    ($t:ident { $($field:ident: $value:expr),* $(,)? }) => {{
+        let mut v = $t::default();
+        $(v.$field = $value;)*
+        v
+    }};
+}
+
 const AFFIRMATION: &str = "To the best of its knowledge and belief, the hospital has included all applicable standard charge information in accordance with the requirements of 45 CFR 180.50, and the information encoded is true, accurate, and complete as of the date indicated.";
 
 fn read(name: &str) -> (Vec<Record>, Metadata) {
@@ -28,7 +38,7 @@ fn list(v: &[&str]) -> Vec<String> {
 }
 
 fn code(code: &str, code_type: Option<&str>) -> Code {
-    Code { code: code.into(), code_type: code_type.map(Into::into) }
+    with!(Code { code: code.into(), code_type: code_type.map(Into::into) })
 }
 
 fn error_csv(input: &str) -> Error {
@@ -47,7 +57,7 @@ fn tall_2_0_0() {
     let (records, metadata) = read("tall-2.0.0.csv");
     assert_eq!(
         metadata,
-        Metadata {
+        with!(Metadata {
             layout: Some(Layout::Tall),
             version: s("2.0.0"),
             hospital_name: s("West Mercy Hospital"),
@@ -61,12 +71,11 @@ fn tall_2_0_0() {
             license_state: s("CA"),
             attestation: s(AFFIRMATION),
             attestation_confirmed: s("true"),
-            ..Metadata::default()
-        }
+        })
     );
     // The blank row on line 6 is skipped.
     assert_eq!(records.iter().map(|r| r.position).collect::<Vec<_>>(), [4, 5, 7, 8]);
-    let hip = Charge {
+    let hip = with!(Charge {
         description: s("Major hip and knee joint replacement"),
         codes: vec![code("470", Some("MS-DRG")), code("175869", Some("LOCAL"))],
         setting: s("inpatient"),
@@ -75,18 +84,16 @@ fn tall_2_0_0() {
         discounted_cash: s("20000"),
         minimum: s("18000"),
         maximum: s("22000"),
-        ..Charge::default()
-    };
+    });
     assert_eq!(*records[0].charge, hip);
     assert_eq!(
         records[1].payer,
-        Some(Payer {
+        Some(with!(Payer {
             name: s("Region Health"),
             plan: s("HMO"),
             percentage: s("60"),
             methodology: s("percent of total billed charges"),
-            ..Payer::default()
-        })
+        }))
     );
     assert_eq!(records[1].charge.notes, s("Only for members"));
     assert_eq!(records[2].charge.codes, [code("99213", None)]);
@@ -125,7 +132,7 @@ fn tall_3_0_0() {
     assert_eq!(records.iter().map(|r| r.position).collect::<Vec<_>>(), [4, 5, 6]);
     assert_eq!(
         records[1].payer,
-        Some(Payer {
+        Some(with!(Payer {
             name: s("Region Health"),
             plan: s("Silver HMO"),
             percentage: s("70"),
@@ -134,8 +141,7 @@ fn tall_3_0_0() {
             percentile_10th: s("980.00"),
             percentile_90th: s("1600.00"),
             count: s("25"),
-            ..Payer::default()
-        })
+        }))
     );
     assert_eq!(
         records[2].charge.codes,
@@ -169,25 +175,23 @@ fn wide_2_2_0() {
     // `Aetna | PPO` and `aetna | ppo` columns are one block, named as first written.
     assert_eq!(
         records[0].payer,
-        Some(Payer {
+        Some(with!(Payer {
             name: s("Aetna"),
             plan: s("PPO"),
             dollar: s("20000"),
             methodology: s("case rate"),
-            ..Payer::default()
-        })
+        }))
     );
     assert_eq!(
         records[1].payer,
-        Some(Payer {
+        Some(with!(Payer {
             name: s("Region Health"),
             plan: s("HMO"),
             percentage: s("60"),
             estimated_amount: s("23145.98"),
             methodology: s("percent of total billed charges"),
             notes: s("Excludes implants"),
-            ..Payer::default()
-        })
+        }))
     );
     assert_eq!(records[2].payer.as_ref().unwrap().name, s("Aetna"));
     assert_eq!(records[3].payer, None);
@@ -201,7 +205,7 @@ fn wide_3_0_0() {
     assert_eq!(records.iter().map(|r| r.position).collect::<Vec<_>>(), [4, 4, 5]);
     assert_eq!(
         records[1].payer,
-        Some(Payer {
+        Some(with!(Payer {
             name: s("Region Health"),
             plan: s("Silver HMO"),
             percentage: s("70"),
@@ -211,8 +215,7 @@ fn wide_3_0_0() {
             count: s("25"),
             methodology: s("percent of total billed charges"),
             notes: s("Paid at 70 percent"),
-            ..Payer::default()
-        })
+        }))
     );
     let modifier = &records[2];
     assert_eq!(modifier.charge.modifiers, ["50"]);
@@ -236,7 +239,7 @@ fn json_2_2_0() {
     let (records, metadata) = read("sample-2.2.0.json");
     assert_eq!(
         metadata,
-        Metadata {
+        with!(Metadata {
             layout: Some(Layout::Json),
             version: s("2.2.0"),
             hospital_name: s("West Mercy Hospital"),
@@ -247,24 +250,22 @@ fn json_2_2_0() {
             license_state: s("CA"),
             attestation: s(AFFIRMATION),
             attestation_confirmed: s("true"),
-            modifiers: vec![ModifierInfo {
+            modifiers: vec![with!(ModifierInfo {
                 code: s("50"),
                 description: s("Bilateral procedure"),
-                setting: None,
-                payers: vec![ModifierPayer {
+                payers: vec![with!(ModifierPayer {
                     name: s("Region Health"),
                     plan: s("HMO"),
                     description: s("150 percent of the fee schedule"),
-                }],
-            }],
-            ..Metadata::default()
-        }
+                })],
+            })],
+        })
     );
     // Two payers, then a standard charge without any, then the second item.
     assert_eq!(records.iter().map(|r| r.position).collect::<Vec<_>>(), [0, 0, 0, 1]);
     assert!(Arc::ptr_eq(&records[0].charge, &records[1].charge));
     assert!(!Arc::ptr_eq(&records[1].charge, &records[2].charge));
-    let hip = Charge {
+    let hip = with!(Charge {
         description: s("Major hip and knee joint replacement"),
         codes: vec![code("470", Some("MS-DRG")), code("175869", Some("LOCAL"))],
         setting: s("inpatient"),
@@ -272,27 +273,25 @@ fn json_2_2_0() {
         discounted_cash: s("20000"),
         minimum: s("18000"),
         maximum: s("22000"),
-        ..Charge::default()
-    };
+    });
     assert_eq!(*records[1].charge, hip);
     assert_eq!(
         records[1].payer,
-        Some(Payer {
+        Some(with!(Payer {
             name: s("Region Health"),
             plan: s("HMO"),
             percentage: s("60"),
             estimated_amount: s("23145.98"),
             methodology: s("percent of total billed charges"),
             notes: s("Excludes implants"),
-            ..Payer::default()
-        })
+        }))
     );
     assert_eq!(records[2].payer, None);
     assert_eq!(records[2].charge.notes, s("Cash price only"));
     assert_eq!(records[2].charge.setting, s("outpatient"));
     assert_eq!(
         *records[3].charge,
-        Charge {
+        with!(Charge {
             description: s("Infliximab 10 mg"),
             codes: vec![code("J1745", Some("HCPCS"))],
             setting: s("outpatient"),
@@ -302,8 +301,7 @@ fn json_2_2_0() {
             discounted_cash: s("120"),
             minimum: s("90"),
             maximum: s("130"),
-            ..Charge::default()
-        }
+        })
     );
 }
 
@@ -324,7 +322,7 @@ fn json_3_0_0() {
     assert_eq!(records[0].payer.as_ref().unwrap().dollar, s("1.25"));
     assert_eq!(
         records[1].payer,
-        Some(Payer {
+        Some(with!(Payer {
             name: s("Region Health"),
             plan: s("Silver HMO"),
             percentage: s("70"),
@@ -333,8 +331,7 @@ fn json_3_0_0() {
             percentile_10th: s("980"),
             percentile_90th: s("1600"),
             count: s("25"),
-            ..Payer::default()
-        })
+        }))
     );
 }
 

@@ -48,7 +48,6 @@ mod files {
     use parquet::file::reader::{FileReader, SerializedFileReader};
     use std::fmt::Write;
     use std::fs::{self, File};
-    use std::mem::discriminant;
     use std::path::{Path, PathBuf};
 
     const HEADER: &str = "\
@@ -56,6 +55,11 @@ hospital_name,last_updated_on,version,hospital_address,license_number | NY
 General Hospital,2026-01-01,2.2.0,1 Main St,12345
 description,code | 1,code | 1 | type,modifiers,payer_name,plan_name,standard_charge | negotiated_dollar,estimated_amount,additional_generic_notes,standard_charge | gross
 ";
+
+    /// Files, records, late metadata.
+    fn counts(s: Summary) -> (u32, u64, bool) {
+        (s.chunks, s.records, s.late_metadata)
+    }
 
     /// A fresh directory for one test's files.
     fn dir(name: &str) -> PathBuf {
@@ -130,8 +134,11 @@ A,99213,CPT,,Acme,PPO,1.5,7,yes,2026-01-02
         ]);
         let path = dir("types").join("out.parquet");
         let (summary, chunks) = run(input.as_bytes(), Format::Csv, &config, &Output::new(&path));
-        assert_eq!(summary, Summary { chunks: 1, records: 3, late_metadata: false });
-        assert_eq!(chunks, [Chunk { path: path.clone(), index: 1, records: 3 }]);
+        assert_eq!(counts(summary), (1, 3, false));
+        assert_eq!(
+            chunks.iter().map(|c| (&c.path, c.index, c.records)).collect::<Vec<_>>(),
+            [(&path, 1, 3)]
+        );
         assert_eq!(
             rows(&path),
             [
@@ -147,17 +154,24 @@ A,99213,CPT,,Acme,PPO,1.5,7,yes,2026-01-02
         let config = columns(&[("s", "charge.description", "string")]);
         let input = csv(3);
         let dir = dir("codecs");
-        for (i, codec) in
-            ["none", "snappy", "gzip", "gzip:9", "lz4", "zstd", "zstd:19", "brotli", "brotli:5"]
-                .iter()
-                .enumerate()
-        {
+        let codecs = [
+            ("none", "UNCOMPRESSED"),
+            ("snappy", "SNAPPY"),
+            ("gzip", "GZIP"),
+            ("gzip:9", "GZIP"),
+            ("lz4", "LZ4_RAW"),
+            ("zstd", "ZSTD"),
+            ("zstd:19", "ZSTD"),
+            ("brotli", "BROTLI"),
+            ("brotli:5", "BROTLI"),
+        ];
+        for (i, (codec, name)) in codecs.iter().enumerate() {
             let mut output = Output::new(dir.join(format!("{i}.parquet")));
             output.compression = parse_compression(codec).unwrap();
             run(input.as_bytes(), Format::Csv, &config, &output);
             // The file names the codec, not the level.
             let written = reader(&output.path).metadata().row_group(0).column(0).compression();
-            assert_eq!(discriminant(&written), discriminant(&output.compression), "{codec}");
+            assert!(format!("{written:?}").starts_with(name), "{codec}: {written:?}");
             assert_eq!(rows(&output.path).len(), 3, "{codec}");
         }
         for codec in ["lzo", "zstd:99", "snappy:1", "gzip:x", "gzip:-1", "brotli:12", ""] {
@@ -179,7 +193,7 @@ A,99213,CPT,,Acme,PPO,1.5,7,yes,2026-01-02
         let mut output = Output::new(dir.join("out.parquet"));
         output.chunk_size = 2;
         let (summary, chunks) = run(input.as_bytes(), Format::Csv, &config, &output);
-        assert_eq!(summary, Summary { chunks: 3, records: 5, late_metadata: false });
+        assert_eq!(counts(summary), (3, 5, false));
         let names: Vec<_> = (chunks.iter())
             .map(|c| (c.path.file_name().unwrap().to_str().unwrap(), c.index, c.records))
             .collect();
@@ -220,7 +234,7 @@ A,99213,CPT,,Acme,PPO,1.5,7,yes,2026-01-02
         let config = columns(&[("s", "charge.description", "string")]);
         let path = dir("zero").join("out.parquet");
         let (summary, chunks) = run(HEADER.as_bytes(), Format::Csv, &config, &Output::new(&path));
-        assert_eq!(summary, Summary { chunks: 1, records: 0, late_metadata: false });
+        assert_eq!(counts(summary), (1, 0, false));
         assert_eq!(chunks.len(), 1);
         assert_eq!(reader(&path).metadata().file_metadata().num_rows(), 0);
         assert_eq!(footer(&path)["hospital_name"], "General Hospital");

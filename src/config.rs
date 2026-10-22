@@ -46,6 +46,7 @@ pub const BUILTIN: &str = include_str!("default.toml");
 
 /// A loaded config: [`Config::load`], [`Config::parse`] or [`Config::builtin`].
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Config {
     /// `[output]`.
     pub output: Output,
@@ -65,6 +66,7 @@ pub struct Config {
 /// `[output]`: kept as written, read by the writer.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct Output {
     /// `none`, `snappy`, `gzip[:level]`, `lz4`, `zstd[:level]`, `brotli[:level]`.
     pub compression: Option<String>,
@@ -77,6 +79,7 @@ pub struct Output {
 /// `[aliases.csv]`, `[aliases.json]`: each CMS name with the names read as it.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct Aliases {
     /// CSV column names.
     #[serde(default)]
@@ -89,6 +92,7 @@ pub struct Aliases {
 /// `[[plugin]]`: a WASM module, its functions named `<name>.<function>`.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct Plugin {
     /// The first part of its functions' names.
     pub name: String,
@@ -102,6 +106,7 @@ pub struct Plugin {
 /// A plugin function that gets records: `[[filter]]`, which keeps or drops each one, or the
 /// `plugin` of a column, which computes its value.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Hook {
     /// `<plugin>.<function>`.
     pub plugin: String,
@@ -112,6 +117,7 @@ pub struct Hook {
 
 /// `[[column]]`: one output column.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Column {
     /// The column's name in the output.
     pub name: String,
@@ -125,6 +131,7 @@ pub struct Column {
 
 /// Where a column's value comes from.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Source {
     /// `from`: one field, or several whose texts are joined by `|`.
     Fields(Vec<Field>),
@@ -135,6 +142,7 @@ pub enum Source {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 /// A column's type; a value that does not cast is null.
+#[non_exhaustive]
 pub enum Type {
     /// The text.
     String,
@@ -154,6 +162,7 @@ pub enum Type {
 
 /// A step that changes a column's value before the cast.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum Transform {
     /// Leading and trailing whitespace.
     Trim,
@@ -206,6 +215,7 @@ const DOMAINS: &[(&str, &[&str])] = &[
 /// A column's value, handed to the writer. Text borrows from the record when no transform
 /// changed it.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum Value<'a> {
     /// No value, or one that does not cast.
     Null,

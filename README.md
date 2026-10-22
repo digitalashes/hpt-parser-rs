@@ -357,6 +357,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
   for a row without payer values) and `position`. Fields added in later versions of the
   data dictionary are `Option`; an empty value is `None`.
 - `Parser::with_aliases` reads non-standard names as CMS names.
+- The record, metadata, config and output types are `#[non_exhaustive]`: the fields a later
+  data dictionary adds come in a minor version.
 - An `Err` ends the iteration.
 
 With the `parquet` feature, `hpt_parser::parquet::write` does what the command does:

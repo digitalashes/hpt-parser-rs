@@ -62,6 +62,7 @@ pub enum Format {
 /// The file's layout, known once the header is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "parquet", derive(serde::Serialize), serde(rename_all = "lowercase"))]
+#[non_exhaustive]
 pub enum Layout {
     /// CSV with `payer_name` and `plan_name` columns: one row per item and payer/plan.
     Tall,
@@ -85,6 +86,7 @@ impl Layout {
 
 /// One charge item for one payer/plan.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Record {
     /// The item's fields, shared by every record of one CSV row or JSON `standard_charges`
     /// entry.
@@ -98,6 +100,7 @@ pub struct Record {
 
 /// A charge item: what is the same for every payer.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Charge {
     /// CSV `description`, JSON `description`.
     pub description: Option<String>,
@@ -128,6 +131,7 @@ pub struct Charge {
 
 /// A billing code.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Code {
     /// CSV `code | i`, JSON `code`.
     pub code: String,
@@ -137,6 +141,7 @@ pub struct Code {
 
 /// The payer-specific part of a record.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Payer {
     /// CSV `payer_name`, JSON `payer_name`.
     pub name: Option<String>,
@@ -168,6 +173,7 @@ pub struct Payer {
 /// The file's header. Lists come from `|`-separated CSV cells or JSON arrays.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "parquet", derive(serde::Serialize))]
+#[non_exhaustive]
 pub struct Metadata {
     /// Known once the header is read.
     pub layout: Option<Layout>,
@@ -209,6 +215,7 @@ pub struct Metadata {
 /// One JSON `modifier_information` entry.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "parquet", derive(serde::Serialize))]
+#[non_exhaustive]
 pub struct ModifierInfo {
     /// `code`.
     pub code: Option<String>,
@@ -223,6 +230,7 @@ pub struct ModifierInfo {
 /// One `modifier_payer_information` entry.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "parquet", derive(serde::Serialize))]
+#[non_exhaustive]
 pub struct ModifierPayer {
     /// `payer_name`.
     pub name: Option<String>,

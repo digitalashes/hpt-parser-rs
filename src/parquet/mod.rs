@@ -10,8 +10,8 @@ mod group;
 use crate::config::{self, Call, Column, Config, Type, Value, plugin_error};
 use crate::{Error, Metadata, Parser};
 use ::parquet::basic::{
-    BrotliLevel, Compression, ConvertedType, GzipLevel, LogicalType, Repetition, Type as Physical,
-    ZstdLevel,
+    BrotliLevel, Compression as Codec, ConvertedType, GzipLevel, LogicalType, Repetition,
+    Type as Physical, ZstdLevel,
 };
 use ::parquet::file::metadata::KeyValue;
 use ::parquet::file::properties::WriterProperties;
@@ -32,8 +32,14 @@ const BATCH: usize = 512;
 /// The footer key that holds the file's metadata.
 pub const METADATA_KEY: &str = "hpt.metadata";
 
+/// The codec of every column, from [`parse_compression`]. It keeps the `parquet` crate's
+/// own type, which changes with each of its major versions, out of this API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Compression(Codec);
+
 /// Where and how to write.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Output {
     /// The file, or the name the chunk files are made from.
     pub path: PathBuf,
@@ -53,7 +59,9 @@ impl Output {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Output {
             path: path.into(),
-            compression: Compression::ZSTD(ZstdLevel::try_new(3).expect("3 is a zstd level")),
+            compression: Compression(Codec::ZSTD(
+                ZstdLevel::try_new(3).expect("3 is a zstd level"),
+            )),
             row_group_size: 256_000,
             chunk_size: 0,
         }
@@ -97,31 +105,30 @@ pub fn parse_compression(s: &str) -> Result<Compression, Error> {
     };
     let unsigned = |l: i32| u32::try_from(l).map_err(|_| error("the level is negative".into()));
     let level_error = |e: ::parquet::errors::ParquetError| error(e.to_string());
-    Ok(match (name, level) {
-        ("none", None) => Compression::UNCOMPRESSED,
-        ("snappy", None) => Compression::SNAPPY,
-        ("lz4", None) => Compression::LZ4_RAW,
+    Ok(Compression(match (name, level) {
+        ("none", None) => Codec::UNCOMPRESSED,
+        ("snappy", None) => Codec::SNAPPY,
+        ("lz4", None) => Codec::LZ4_RAW,
         ("none" | "snappy" | "lz4", Some(_)) => return Err(error("takes no level".into())),
-        ("gzip", None) => Compression::GZIP(GzipLevel::default()),
-        ("gzip", Some(l)) => {
-            Compression::GZIP(GzipLevel::try_new(unsigned(l)?).map_err(level_error)?)
-        }
-        ("zstd", None) => Compression::ZSTD(ZstdLevel::default()),
-        ("zstd", Some(l)) => Compression::ZSTD(ZstdLevel::try_new(l).map_err(level_error)?),
-        ("brotli", None) => Compression::BROTLI(BrotliLevel::default()),
+        ("gzip", None) => Codec::GZIP(GzipLevel::default()),
+        ("gzip", Some(l)) => Codec::GZIP(GzipLevel::try_new(unsigned(l)?).map_err(level_error)?),
+        ("zstd", None) => Codec::ZSTD(ZstdLevel::default()),
+        ("zstd", Some(l)) => Codec::ZSTD(ZstdLevel::try_new(l).map_err(level_error)?),
+        ("brotli", None) => Codec::BROTLI(BrotliLevel::default()),
         ("brotli", Some(l)) => {
-            Compression::BROTLI(BrotliLevel::try_new(unsigned(l)?).map_err(level_error)?)
+            Codec::BROTLI(BrotliLevel::try_new(unsigned(l)?).map_err(level_error)?)
         }
         _ => {
             return Err(error(
                 "expected none, snappy, gzip[:level], lz4, zstd[:level] or brotli[:level]".into(),
             ));
         }
-    })
+    }))
 }
 
 /// A file once it is closed.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Chunk {
     /// Where it was written.
     pub path: PathBuf,
@@ -133,6 +140,7 @@ pub struct Chunk {
 
 /// What [`write()`] wrote.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Summary {
     /// Files written.
     pub chunks: u32,
@@ -173,7 +181,7 @@ pub fn write<R: Read>(
 ) -> Result<Summary, Error> {
     let schema = schema(&config.columns)?;
     let properties =
-        Arc::new(WriterProperties::builder().set_compression(output.compression).build());
+        Arc::new(WriterProperties::builder().set_compression(output.compression.0).build());
     let descr = SchemaDescriptor::new(schema.clone());
     let group = Group::new(&config.columns, descr.columns(), &properties);
     let mut files = Files {
