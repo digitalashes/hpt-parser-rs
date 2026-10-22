@@ -357,4 +357,11 @@ fn json_errors() {
     assert_eq!(position(error("{\n\"a\": 1,\n\"b\": tru}", Format::Json)), (3, 9));
     let truncated = "{\"hospital_name\": \"X\", \"standard_charge_information\": [";
     assert_eq!(position(error(truncated, Format::Json)), (1, 56));
+    assert_eq!(position(error("", Format::Json)), (1, 1));
+    // An object's members are not taken for header fields.
+    let object = "{\"standard_charge_information\": {\"version\": \"2.2.0\"}}";
+    let mut parser = Parser::new(object.as_bytes(), Format::Json);
+    let Some(Err(Error::Json { message, .. })) = parser.next() else { panic!() };
+    assert_eq!(message, "standard_charge_information is not an array");
+    assert_eq!(parser.metadata().version, None);
 }

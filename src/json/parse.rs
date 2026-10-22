@@ -79,8 +79,9 @@ enum End {
 type Step = Result<(), End>;
 
 /// The values at `paths`, in `@streamparser/json` selector syntax without the `$`
-/// (`&["a", "*"]` is `$.a.*`), with names or `*` as selectors. Values elsewhere are checked
-/// but never built.
+/// (`&["a", "*"]` is `$.a.*`), with names or `*` as selectors. `*` selects an array's
+/// elements: the value it is under is an error when it is not an array. Values elsewhere are
+/// checked but never built.
 pub struct Parser<R> {
     stream: text::Stream<R>,
     text: String,
@@ -102,6 +103,13 @@ impl<R: Read> Parser<R> {
             ended: false,
             tokens: Tokens {
                 paths,
+                // ponytail: depths past 63 share a bit, which only costs a path comparison
+                item_depths: (paths.iter())
+                    .filter_map(|path| match *path {
+                        [parent @ .., "*"] => Some(1 << parent.len().min(63)),
+                        _ => None,
+                    })
+                    .fold(0, |depths, depth| depths | depth),
                 queue: VecDeque::new(),
                 at: Position { line: 1, column: 1 },
                 state: State::BOM_OR_START,
@@ -299,6 +307,8 @@ struct Frame {
 
 struct Tokens {
     paths: &'static [&'static [&'static str]],
+    /// A bit for each length of a path's part before `*`: the depths `items_parent` looks at.
+    item_depths: u64,
     /// Emitted values not yet pulled.
     queue: VecDeque<(Key, Value)>,
     /// Where the chunks written so far end.
@@ -524,20 +534,26 @@ impl Tokens {
         }
     }
 
-    /// The token parser's `end`.
+    /// The token parser's `end`: a complete top-level value ends parsing before the input
+    /// does, so here there is none.
     fn end_tokens(&self) -> End {
-        if self.expect != Expect::VALUE || !self.stack.is_empty() {
-            return End::Invalid(format!(
-                "the input ends in the middle of the document (state {:?})",
-                self.expect
-            ));
-        }
-        End::Done
+        End::Invalid(if self.stack.is_empty() {
+            "the input holds no JSON value".into()
+        } else {
+            format!("the input ends in the middle of the document (state {:?})", self.expect)
+        })
     }
 
     /// The token parser's `write`. At the top level a value ends parsing before `expect`
     /// is read again, so it is set as inside a container.
     fn token(&mut self, token: Token) -> Step {
+        if self.expect == Expect::VALUE
+            && self.item_depths & (1 << self.stack.len().min(63)) != 0
+            && matches!(token, Token::Value(_) | Token::LeftBrace)
+            && let Some(name) = self.items_parent()
+        {
+            return Err(End::Invalid(format!("{name} is not an array")));
+        }
         let array = matches!(self.key, Some(Key::Index(_)));
         match (self.expect, token) {
             (Expect::VALUE, Token::Value(value)) => {
@@ -634,12 +650,24 @@ impl Tokens {
 
     /// Whether the value at the current key matches a path.
     fn should_emit(&self) -> bool {
-        let keys = || (self.stack.iter().skip(1).map(|f| &f.key)).chain([&self.key]);
-        self.paths.iter().any(|path| {
-            path.len() == self.stack.len()
-                && (path.iter().zip(keys()))
-                    .all(|(s, k)| *s == "*" || matches!(k, Some(Key::Name(n)) if n == s))
+        self.paths.iter().any(|path| self.at(path))
+    }
+
+    /// The name of the current key when a path's `*` is under it, so the value must be an
+    /// array.
+    fn items_parent(&self) -> Option<&'static str> {
+        self.paths.iter().find_map(|path| match *path {
+            [parent @ .., "*"] if self.at(parent) => parent.last().copied(),
+            _ => None,
         })
+    }
+
+    /// Whether the current key's path is `path`.
+    fn at(&self, path: &[&str]) -> bool {
+        let keys = (self.stack.iter().skip(1).map(|f| &f.key)).chain([&self.key]);
+        path.len() == self.stack.len()
+            && (path.iter().zip(keys))
+                .all(|(s, k)| *s == "*" || matches!(k, Some(Key::Name(n)) if n == s))
     }
 }
 
@@ -692,6 +720,18 @@ mod tests {
             assert_eq!(position("\u{feff}\n\n{\"a\": ", chunk), (3, 7));
             assert_eq!(position("\u{feff}x", chunk), (1, 1));
             assert_eq!(position("[1, 2", chunk), (1, 6));
+            assert_eq!(position(" \n ", chunk), (2, 2));
         }
+    }
+
+    #[test]
+    fn items_must_be_an_array() {
+        for input in ["{\"b\": {\"a\": 1}}", "{\"b\": 5}", "{\"b\": null}"] {
+            let Err(Error::Json { message, .. }) = values(input, 65536) else {
+                panic!("{input}");
+            };
+            assert_eq!(message, "b is not an array");
+        }
+        assert_eq!(values("{\"b\": []}", 65536).unwrap(), []);
     }
 }
