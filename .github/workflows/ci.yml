@@ -23,3 +23,28 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup toolchain install 1.96 --profile minimal
       - run: cargo +1.96 check --all-targets
+
+  features:
+    strategy:
+      matrix:
+        flags: ["--no-default-features --features parquet", "--no-default-features"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo clippy --all-targets ${{ matrix.flags }} -- -D warnings
+      - run: cargo test ${{ matrix.flags }}
+
+  # The example plugins: their own checks, then each columns.toml on its fixture.
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup target add wasm32-unknown-unknown
+      - run: |
+          for manifest in examples/*/Cargo.toml; do
+            cargo clippy --manifest-path "$manifest" --locked -- -D warnings
+            cargo test --manifest-path "$manifest" --locked
+            cargo build --manifest-path "$manifest" --locked --release --target wasm32-unknown-unknown
+          done
+      - run: cargo run -- tests/fixtures/tall-3.0.0.csv -c examples/rates/columns.toml -o rates.parquet
+      - run: cargo run -- tests/fixtures/wide-3.0.0.csv -c examples/payer-names/columns.toml -o names.parquet

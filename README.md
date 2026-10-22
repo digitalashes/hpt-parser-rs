@@ -31,10 +31,12 @@ It does not validate. To check that a file follows the data dictionary, use
 ## Install
 
 Download a binary for macOS, Linux or Windows from the
-[releases](https://github.com/digitalashes/hpt-parser-rs/releases), or build one (Rust 1.96
-or later):
+[releases](https://github.com/digitalashes/hpt-parser-rs/releases) (each with its SHA-256
+there), or let [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) fetch it, or
+build one (Rust 1.96 or later):
 
 ```sh
+cargo binstall hpt-parser
 cargo install hpt-parser
 ```
 
