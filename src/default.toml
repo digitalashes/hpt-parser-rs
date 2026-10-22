@@ -13,7 +13,7 @@
 #
 # More fields: record.position and metadata.{layout, version, hospital_name,
 # last_updated_on, location_name, hospital_address, license_number, license_state,
-# type_2_npi, attestation, attestation_confirmed, attester_name, extra.<key>}.
+# type_2_npi, attestation, attestation_confirmed, attester_name}.
 
 [output]
 compression = "zstd:3"

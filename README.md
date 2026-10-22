@@ -165,7 +165,7 @@ null.
 |----------------|--------|
 | `charge.*`     | `description`, `codes`, `setting`, `billing_class`, `drug_unit`, `drug_unit_type`, `modifiers`, `gross_charge`, `discounted_cash`, `minimum`, `maximum`, `notes` |
 | `payer.*`      | `name`, `plan`, `dollar`, `percentage`, `algorithm`, `methodology`, `estimated_amount`, `median_amount`, `percentile_10th`, `percentile_90th`, `count`, `notes` |
-| `metadata.*`   | `layout`, `version`, `hospital_name`, `last_updated_on`, `location_name`, `hospital_address`, `license_number`, `license_state`, `type_2_npi`, `attestation`, `attestation_confirmed`, `attester_name`, `extra.<key>` |
+| `metadata.*`   | `layout`, `version`, `hospital_name`, `last_updated_on`, `location_name`, `hospital_address`, `license_number`, `license_state`, `type_2_npi`, `attestation`, `attestation_confirmed`, `attester_name` |
 | `record.*`     | `position`: the CSV line the row starts on, or the JSON item's index |
 
 **Types.**

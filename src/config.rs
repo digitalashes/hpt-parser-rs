@@ -398,9 +398,16 @@ fn fields(key: &str, names: Names) -> Result<Vec<Field>, String> {
     if names.is_empty() {
         return Err(format!("`{key}` names no field"));
     }
-    let fields = names
-        .iter()
-        .map(|name| Field::parse(name).ok_or_else(|| format!("unknown field `{name}`")));
+    let fields = names.iter().map(|name| {
+        Field::parse(name).ok_or_else(|| {
+            // Filled by `[[metadata]]` plugins, which run after the last record.
+            if name.starts_with("metadata.extra.") {
+                format!("`{name}` is only in the footer, not in records")
+            } else {
+                format!("unknown field `{name}`")
+            }
+        })
+    });
     fields.collect()
 }
 
@@ -487,17 +494,9 @@ fn transform(t: &toml::Value, plugins: &[Plugin]) -> Result<Transform, String> {
     })
 }
 
-/// A field a column reads.
+/// A field a column reads: an index into `FIELDS`.
 #[derive(Clone)]
-pub struct Field(Name);
-
-#[derive(Clone)]
-enum Name {
-    /// An index into `FIELDS`.
-    Known(usize),
-    /// `metadata.extra.<key>`.
-    Extra(String),
-}
+pub struct Field(usize);
 
 type Get = for<'a> fn(&'a Record, &'a Metadata) -> Work<'a>;
 
@@ -505,7 +504,7 @@ fn text(v: Option<&str>) -> Work<'_> {
     v.map_or(Work::Null, |v| Work::Text(Cow::Borrowed(v)))
 }
 
-/// Every field but `metadata.extra.<key>`, in the order of the built-in config.
+/// Every field, in the order of the built-in config.
 const FIELDS: &[(&str, Get)] = &[
     ("charge.description", |r, _| text(r.charge.description.as_deref())),
     ("charge.codes", |r, _| Work::Codes(&r.charge.codes)),
@@ -552,13 +551,10 @@ fn payer(r: &Record, get: fn(&crate::Payer) -> Option<&str>) -> Option<&str> {
 
 impl Field {
     fn parse(name: &str) -> Option<Self> {
-        if let Some(key) = name.strip_prefix("metadata.extra.") {
-            return Some(Field(Name::Extra(key.into())));
-        }
-        FIELDS.iter().position(|(n, _)| *n == name).map(|i| Field(Name::Known(i)))
+        FIELDS.iter().position(|(n, _)| *n == name).map(Field)
     }
 
-    /// Every field name but `metadata.extra.<key>`.
+    /// Every field name.
     pub fn names() -> impl Iterator<Item = &'static str> {
         FIELDS.iter().map(|(name, _)| *name)
     }
@@ -566,23 +562,17 @@ impl Field {
     /// Every `charge.*` and `payer.*` field and `record.position`.
     fn records() -> Vec<Self> {
         let records = (0..FIELDS.len()).filter(|&i| !FIELDS[i].0.starts_with("metadata."));
-        records.map(|i| Field(Name::Known(i))).collect()
+        records.map(Field).collect()
     }
 
     fn get<'a>(&self, record: &'a Record, metadata: &'a Metadata) -> Work<'a> {
-        match &self.0 {
-            Name::Known(i) => (FIELDS[*i].1)(record, metadata),
-            Name::Extra(key) => text(metadata.extra.get(key).map(String::as_str)),
-        }
+        (FIELDS[self.0].1)(record, metadata)
     }
 }
 
 impl fmt::Debug for Field {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.0 {
-            Name::Known(i) => f.write_str(FIELDS[*i].0),
-            Name::Extra(key) => write!(f, "metadata.extra.{key}"),
-        }
+        f.write_str(FIELDS[self.0].0)
     }
 }
 
@@ -632,7 +622,7 @@ fn read<'a>(fields: &[Field], record: &'a Record, metadata: &'a Metadata) -> Wor
 #[cfg(feature = "parquet")]
 mod batch {
     use super::CodeJson;
-    use super::{Column, Config, FIELDS, Field, Name, Source, Transform, Value, Work};
+    use super::{Column, Config, FIELDS, Field, Source, Transform, Value, Work};
     use super::{apply, cast, read};
     use crate::{Error, Metadata, Record};
     use serde::ser::{Serialize, SerializeMap, Serializer};
@@ -790,10 +780,7 @@ mod batch {
     /// The field's name.
     impl Serialize for Field {
         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            match &self.0 {
-                Name::Known(i) => s.serialize_str(FIELDS[*i].0),
-                Name::Extra(_) => s.collect_str(&format_args!("{self:?}")),
-            }
+            s.serialize_str(FIELDS[self.0].0)
         }
     }
 
@@ -1213,6 +1200,10 @@ mod tests {
             col("from = \"payer.nam\"\ntype = \"string\""),
             "column `c`: unknown field `payer.nam`"
         );
+        assert_eq!(
+            col("from = \"metadata.extra.k\"\ntype = \"string\""),
+            "column `c`: `metadata.extra.k` is only in the footer, not in records"
+        );
         let twice = "[[column]]\nname = \"c\"\nfrom = \"payer.name\"\ntype = \"string\"\n";
         assert_eq!(message(&twice.repeat(2)), "column `c` is defined twice");
         assert_eq!(
@@ -1300,14 +1291,10 @@ mod tests {
         let config = Config::parse(
             "[[plugin]]\nname = \"p\"\npath = \"p.wasm\"\n[[filter]]\nplugin = \"p.all\"
 [[filter]]\nplugin = \"p.some\"
-fields = [\"payer.dollar\", \"payer.name\", \"metadata.hospital_name\", \"metadata.extra.k\"]",
+fields = [\"payer.dollar\", \"payer.name\", \"metadata.hospital_name\"]",
         )
         .unwrap();
-        let metadata = Metadata {
-            hospital_name: Some("H".into()),
-            extra: [("k".into(), "v".into())].into(),
-            ..Metadata::default()
-        };
+        let metadata = Metadata { hospital_name: Some("H".into()), ..Metadata::default() };
         let json = |h: &Hook| {
             String::from_utf8(batch::records_json(&[record("1")], &h.fields, &metadata)).unwrap()
         };
@@ -1317,7 +1304,7 @@ fields = [\"payer.dollar\", \"payer.name\", \"metadata.hospital_name\", \"metada
         );
         assert_eq!(
             json(&config.filters[1]),
-            r#"{"records":[{"payer.dollar":"1","metadata.hospital_name":"H","metadata.extra.k":"v"}]}"#
+            r#"{"records":[{"payer.dollar":"1","metadata.hospital_name":"H"}]}"#
         );
     }
 

@@ -191,6 +191,9 @@ fn item(v: &Value, position: u64, pending: &mut VecDeque<Record>) {
     }
 }
 
+// Without the hint an unrelated change in the config module left it out of line: nyp 3%
+// slower.
+#[inline]
 fn payer(p: &Value) -> Payer {
     let get = |name| text(p.get(name));
     Payer {

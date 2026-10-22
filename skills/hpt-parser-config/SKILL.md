@@ -230,8 +230,8 @@ plugin = "acme.source"
 - `[[metadata]]` runs once, after the last record. The metadata object has the
   `metadata.*` fields under their short names (`hospital_name`, `location_name` as a
   list, ...) and `modifiers`, `aliases_used`, `extra`. The answer's fields go to `extra`
-  in the last file's footer (`hpt.metadata`), not into the rows: a column
-  `from = "metadata.extra.<key>"` stays null.
+  in the last file's footer (`hpt.metadata`), not into the rows, so no column or
+  `fields` can name them.
 - Sandboxed: no WASI, files or network; 60 seconds a call and 256 MiB of memory. For
   Rust build for `wasm32-unknown-unknown`, where there is no clock, random source or
   environment either: keep the functions pure.
