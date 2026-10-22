@@ -636,11 +636,12 @@ fn date(s: &str) -> Option<i32> {
         (len.contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()))
             .then(|| p.parse::<i64>().ok())?
     };
-    let parts: Vec<&str> = s.split(['-', '/']).collect();
-    let (y, m, d) = match parts[..] {
-        [y, m, d] if s.contains('-') => (digits(y, 4..=4)?, digits(m, 2..=2)?, digits(d, 2..=2)?),
-        [m, d, y] if s.contains('/') => (digits(y, 4..=4)?, digits(m, 1..=2)?, digits(d, 1..=2)?),
-        _ => return None,
+    let (y, m, d) = match s.split('-').collect::<Vec<_>>()[..] {
+        [y, m, d] => (digits(y, 4..=4)?, digits(m, 2..=2)?, digits(d, 2..=2)?),
+        _ => match s.split('/').collect::<Vec<_>>()[..] {
+            [m, d, y] => (digits(y, 4..=4)?, digits(m, 1..=2)?, digits(d, 1..=2)?),
+            _ => return None,
+        },
     };
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
     let days_in_month = match m {
@@ -758,6 +759,8 @@ mod tests {
         assert_eq!(run("date", "", "2026-02-30"), Value::Null);
         assert_eq!(run("date", "", "13/1/2026"), Value::Null);
         assert_eq!(run("date", "", "2026-1-01"), Value::Null);
+        assert_eq!(run("date", "", "2026-01/01"), Value::Null);
+        assert_eq!(run("date", "", "01-02/2026"), Value::Null);
         assert_eq!(run("json", "", "a\"b"), t("\"a\\\"b\""));
         assert_eq!(run("list", "", "a | b"), Value::List(vec!["a".into(), "b".into()]));
         let empty = column("from = \"payer.name\"\ntype = \"f64\"");
