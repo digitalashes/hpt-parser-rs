@@ -1,9 +1,9 @@
-//! Parser for CMS Hospital Price Transparency machine-readable files: CSV tall files,
-//! data dictionary 2.0.0 to 3.0.0.
+//! Parser for CMS Hospital Price Transparency machine-readable files: CSV tall and wide
+//! files, data dictionary 2.0.0 to 3.0.0.
 //!
 //! [`Parser`] reads a file as a stream of flat [`Record`]s, one per charge item and
-//! payer/plan: a tall row is one record. A row without payer values is one record with
-//! `payer: None`. The file's header ([`Metadata`]) is kept apart from the records.
+//! payer/plan: a tall row is one record, a wide row one per payer/plan block with a value.
+//! A row without payer values is one record with `payer: None`. The file's header ([`Metadata`]) is kept apart from the records.
 //!
 //! Values are kept as the text in the file, trimmed; an empty cell is `None`. Nothing is
 //! checked or converted, so a sloppy value never fails the parse. An [`Error`] means the

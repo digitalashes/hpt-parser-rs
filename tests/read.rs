@@ -1,6 +1,7 @@
 #![expect(clippy::unwrap_used, reason = "a broken fixture should fail the test")]
 
 use hpt_parser::{Charge, Code, Error, Format, Layout, Metadata, Parser, Payer, Record};
+use std::sync::Arc;
 
 const AFFIRMATION: &str = "To the best of its knowledge and belief, the hospital has included all applicable standard charge information in accordance with the requirements of 45 CFR 180.50, and the information encoded is true, accurate, and complete as of the date indicated.";
 
@@ -141,8 +142,72 @@ fn header_errors() {
     assert_eq!(message(error("")).0, 1);
     assert_eq!(message(error("hospital_name\nWest\n")).0, 3);
     assert_eq!(message(error("a\nb\n\nx\n")), (3, "row 3 (the column names) is blank".into()));
-    let wide = "a\nb\ndescription,standard_charge | Acme | PPO | negotiated_dollar\n";
-    assert!(message(error(wide)).1.contains("neither payer_name"));
+    let both = "a\nb\npayer_name,plan_name,count | Acme | PPO\n";
+    assert!(message(error(both)).1.contains("has both payer_name"));
+    let neither = "a\nb\ndescription,payer_name,standard_charge | Acme | negotiated_dollar\n";
+    assert!(message(error(neither)).1.contains("has neither payer_name"));
+}
+
+#[test]
+fn wide_2_2_0() {
+    let (records, metadata) = read("wide-2.2.0.csv");
+    assert_eq!(metadata.layout, Some(Layout::Wide));
+    // Both blocks, the first only, none.
+    assert_eq!(records.iter().map(|r| r.position).collect::<Vec<_>>(), [4, 4, 5, 6]);
+    assert!(Arc::ptr_eq(&records[0].charge, &records[1].charge));
+    assert_eq!(records[0].charge.codes, [code("470", Some("MS-DRG"))]);
+    // `Aetna | PPO` and `aetna | ppo` columns are one block, named as first written.
+    assert_eq!(
+        records[0].payer,
+        Some(Payer {
+            name: s("Aetna"),
+            plan: s("PPO"),
+            dollar: s("20000"),
+            methodology: s("case rate"),
+            ..Payer::default()
+        })
+    );
+    assert_eq!(
+        records[1].payer,
+        Some(Payer {
+            name: s("Region Health"),
+            plan: s("HMO"),
+            percentage: s("60"),
+            estimated_amount: s("23145.98"),
+            methodology: s("percent of total billed charges"),
+            notes: s("Excludes implants"),
+            ..Payer::default()
+        })
+    );
+    assert_eq!(records[2].payer.as_ref().unwrap().name, s("Aetna"));
+    assert_eq!(records[3].payer, None);
+    assert_eq!(records[3].charge.notes, s("Cash price only"));
+}
+
+#[test]
+fn wide_3_0_0() {
+    let (records, metadata) = read("wide-3.0.0.csv");
+    assert_eq!(metadata.layout, Some(Layout::Wide));
+    assert_eq!(records.iter().map(|r| r.position).collect::<Vec<_>>(), [4, 4, 5]);
+    assert_eq!(
+        records[1].payer,
+        Some(Payer {
+            name: s("Region Health"),
+            plan: s("Silver HMO"),
+            percentage: s("70"),
+            median_amount: s("1250.00"),
+            percentile_10th: s("980.00"),
+            percentile_90th: s("1600.00"),
+            count: s("25"),
+            methodology: s("percent of total billed charges"),
+            notes: s("Paid at 70 percent"),
+            ..Payer::default()
+        })
+    );
+    let modifier = &records[2];
+    assert_eq!(modifier.charge.modifiers, ["50"]);
+    let payer = modifier.payer.as_ref().unwrap();
+    assert_eq!((&payer.name, &payer.count), (&s("Acme"), &s("1 through 10")));
 }
 
 #[test]

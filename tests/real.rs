@@ -2,8 +2,6 @@
 //! real -- --ignored --nocapture` prints the record count, the time and the records at the
 //! `HPT_SHOW` indexes, for a comparison with another reader.
 
-#![expect(clippy::unwrap_used, reason = "a broken input should fail the run")]
-
 use hpt_parser::{Format, Parser};
 use std::time::Instant;
 
