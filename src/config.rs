@@ -635,6 +635,7 @@ mod batch {
     use super::{apply, cast, read};
     use crate::{Error, Metadata, Record};
     use serde::ser::{Serialize, SerializeMap, Serializer};
+    use serde_json::value::RawValue;
     use std::borrow::Cow;
 
     impl Column {
@@ -658,19 +659,15 @@ mod batch {
                 }
                 Source::Plugin(h) => {
                     let input = records_json(records, &h.fields, metadata);
-                    plugin_values(&h.plugin, call(&h.plugin, &input)?, records.len())?
+                    plugin_values(&h.plugin, &call(&h.plugin, &input)?, records.len())?
                 }
             };
             for t in &self.transforms {
                 works = match t {
                     Transform::Plugin(f) => {
-                        #[derive(serde::Serialize)]
-                        struct Values<'w, 'a> {
-                            values: &'w [Work<'a>],
-                        }
                         let input = serde_json::to_vec(&Values { values: &works })
                             .expect("text, lists and codes always serialize");
-                        plugin_values(f, call(f, &input)?, works.len())?
+                        plugin_values(f, &call(f, &input)?, works.len())?
                     }
                     t => works.into_iter().map(|w| apply(t, w)).collect(),
                 };
@@ -680,7 +677,7 @@ mod batch {
     }
 
     /// Calls a plugin function, `<plugin>.<function>`, with its JSON input.
-    pub(crate) type Call<'c> = dyn FnMut(&str, &[u8]) -> Result<serde_json::Value, Error> + 'c;
+    pub(crate) type Call<'c> = dyn FnMut(&str, &[u8]) -> Result<Box<RawValue>, Error> + 'c;
 
     impl Config {
         /// Drops the records a `[[filter]]` does not keep, one filter after another.
@@ -695,14 +692,18 @@ mod batch {
                     break;
                 }
                 let input = records_json(records, &f.fields, metadata);
-                let keep = answer(&f.plugin, call(&f.plugin, &input)?, "keep", records.len())?;
-                let keep: Vec<bool> = (keep.iter())
-                    .map(|k| {
-                        k.as_bool().ok_or_else(|| {
-                            plugin_error(&f.plugin, format!("`keep` holds {k}, not true or false"))
-                        })
+                let answer = call(&f.plugin, &input)?;
+                let keep = serde_json::from_str(answer.get()).ok().map(|k: Keep<_>| k.keep);
+                let keep = (items(&f.plugin, keep, "keep", records.len())?.iter())
+                    .map(|k| match k.get() {
+                        "true" => Ok(true),
+                        "false" => Ok(false),
+                        k => Err(plugin_error(
+                            &f.plugin,
+                            format!("`keep` holds {k}, not true or false"),
+                        )),
                     })
-                    .collect::<Result<_, _>>()?;
+                    .collect::<Result<Vec<_>, _>>()?;
                 let mut keep = keep.into_iter();
                 records.retain(|_| keep.next().expect("one answer per record"));
             }
@@ -714,29 +715,41 @@ mod batch {
         Error::Plugin { plugin: function.into(), message }
     }
 
-    /// The answer's `key` array, one item per input.
-    pub(crate) fn answer(
+    /// `{"values":[..]}`: a value transform's input, the answer of it and of a plugin column.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Values<T> {
+        values: T,
+    }
+
+    /// `{"keep":[..]}`: a filter's answer.
+    #[derive(serde::Deserialize)]
+    struct Keep<T> {
+        keep: T,
+    }
+
+    /// The answer's `key` array, if it has one, with an item per input.
+    fn items<'a>(
         function: &str,
-        mut answer: serde_json::Value,
+        items: Option<Vec<&'a RawValue>>,
         key: &str,
         n: usize,
-    ) -> Result<Vec<serde_json::Value>, Error> {
-        match answer.get_mut(key).map(serde_json::Value::take) {
-            Some(serde_json::Value::Array(items)) if items.len() == n => Ok(items),
-            Some(serde_json::Value::Array(items)) => Err(plugin_error(
-                function,
-                format!("{} items in `{key}` for {n} inputs", items.len()),
-            )),
-            _ => Err(plugin_error(function, format!("the answer has no `{key}` array"))),
+    ) -> Result<Vec<&'a RawValue>, Error> {
+        let items = items
+            .ok_or_else(|| plugin_error(function, format!("the answer has no `{key}` array")))?;
+        if items.len() != n {
+            let message = format!("{} items in `{key}` for {n} inputs", items.len());
+            return Err(plugin_error(function, message));
         }
+        Ok(items)
     }
 
     fn plugin_values(
         function: &str,
-        values: serde_json::Value,
+        answer: &RawValue,
         n: usize,
     ) -> Result<Vec<Work<'static>>, Error> {
-        Ok(answer(function, values, "values", n)?.into_iter().map(json_work).collect())
+        let values = serde_json::from_str(answer.get()).ok().map(|v: Values<_>| v.values);
+        Ok(items(function, values, "values", n)?.into_iter().map(json_work).collect())
     }
 
     /// `{"records":[..]}`: each record flat, keyed by the names of `fields`, absent values
@@ -791,8 +804,8 @@ mod batch {
                 Work::Text(text) => s.serialize_str(text),
                 Work::List(list) => list.serialize(s),
                 Work::Codes(codes) => s.collect_seq(codes.iter().map(CodeJson::from)),
-                Work::Json(text) => match serde_json::from_str::<serde_json::Value>(text) {
-                    Ok(value) => value.serialize(s),
+                Work::Json(text) => match serde_json::from_str::<&RawValue>(text) {
+                    Ok(json) => json.serialize(s),
                     Err(_) => s.serialize_str(text),
                 },
             }
@@ -800,19 +813,19 @@ mod batch {
     }
 
     /// A plugin's value: a string as text, an array of strings as a list, numbers and booleans
-    /// as their text, other JSON as JSON text.
-    fn json_work(value: serde_json::Value) -> Work<'static> {
-        use serde_json::Value as J;
-        match value {
-            J::Null => Work::Null,
-            J::String(s) => Work::Text(Cow::Owned(s)),
-            J::Array(items) if items.iter().all(J::is_string) => Work::List(
-                (items.into_iter())
-                    .filter_map(|i| if let J::String(s) = i { Some(s) } else { None })
-                    .collect(),
-            ),
-            J::Number(_) | J::Bool(_) => Work::Text(Cow::Owned(value.to_string())),
-            value => Work::Json(value.to_string()),
+    /// as their text, other JSON as its text as the plugin wrote it.
+    fn json_work(value: &RawValue) -> Work<'static> {
+        let text = value.get();
+        match text.as_bytes().first() {
+            Some(b'n') => Work::Null,
+            Some(b'"') => {
+                serde_json::from_str(text).map_or(Work::Null, |s| Work::Text(Cow::Owned(s)))
+            }
+            Some(b'[') => {
+                serde_json::from_str(text).map_or_else(|_| Work::Json(text.into()), Work::List)
+            }
+            Some(b'{') => Work::Json(text.into()),
+            _ => Work::Text(Cow::Owned(text.into())),
         }
     }
 }

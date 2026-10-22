@@ -4,6 +4,7 @@
 use crate::Error;
 use crate::config::{Config, Source, Transform, plugin_error};
 use extism::{Manifest, Plugin, Wasm};
+use serde_json::value::RawValue;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -46,11 +47,7 @@ impl Plugins {
     }
 
     /// Calls `<plugin>.<function>` with JSON.
-    pub(crate) fn call(
-        &mut self,
-        function: &str,
-        input: &[u8],
-    ) -> Result<serde_json::Value, Error> {
+    pub(crate) fn call(&mut self, function: &str, input: &[u8]) -> Result<Box<RawValue>, Error> {
         let (plugin, name) = self.get(function);
         let output: &[u8] =
             plugin.call(name, input).map_err(|e| plugin_error(function, format!("{e:#}")))?;

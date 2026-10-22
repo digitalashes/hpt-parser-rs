@@ -239,10 +239,12 @@ pub fn write<R: Read>(
     }
     let mut metadata = Cow::Borrowed(parser.metadata());
     for function in &config.metadata {
+        #[derive(serde::Deserialize)]
+        struct Answer {
+            fields: serde_json::Map<String, serde_json::Value>,
+        }
         let input = serde_json::to_vec(&*metadata).expect("strings, lists and maps of them");
-        let Some(serde_json::Value::Object(fields)) =
-            call(function, &input)?.get_mut("fields").map(serde_json::Value::take)
-        else {
+        let Ok(Answer { fields }) = serde_json::from_str(call(function, &input)?.get()) else {
             return Err(plugin_error(function, "the answer has no `fields` object".into()));
         };
         for (key, value) in fields {
