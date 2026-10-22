@@ -3,8 +3,8 @@
 //! the first one. Values are pulled: `next` reads chunks until a value at one of the paths
 //! is complete. Numbers keep the text they are written with.
 
-use crate::{Error, text};
-use std::collections::VecDeque;
+use crate::{Aliases, Error, text};
+use std::collections::{BTreeMap, VecDeque};
 use std::io::Read;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +119,10 @@ impl<R: Read> Parser<R> {
                 high_surrogate: None,
                 expect: Expect::VALUE,
                 key: None,
+                aliased: false,
+                aliases: Aliases::default(),
+                alias_lengths: 0,
+                used: BTreeMap::new(),
                 value: None,
                 stack: Vec::new(),
                 spare: Spare::default(),
@@ -160,6 +164,17 @@ impl<R: Read> Parser<R> {
                 Err(End::Invalid(message)) => return Err(self.tokens.position.error(message)),
             }
         }
+    }
+
+    /// Member names to read as other names (see [`crate::Parser::with_aliases`]).
+    pub fn set_aliases(&mut self, aliases: Aliases) {
+        self.tokens.alias_lengths = (aliases.0.iter()).fold(0, |l, a| l | length_bit(&a.key));
+        self.tokens.aliases = aliases;
+    }
+
+    /// The aliases met since the last call.
+    pub fn aliases_used(&mut self) -> &mut BTreeMap<String, String> {
+        &mut self.tokens.used
     }
 
     /// Hands back a value `next` returned, its buffers reused for the values built next.
@@ -299,6 +314,7 @@ impl Spare {
 /// An open container's parent, as `push` saves it.
 struct Frame {
     key: Option<Key>,
+    aliased: bool,
     value: Option<Value>,
     /// Whether the container this frame opened is emitted when it closes.
     emit: bool,
@@ -324,6 +340,13 @@ struct Tokens {
     /// An array element's index, an object member's name, or none: what the open container
     /// is, too.
     key: Option<Key>,
+    /// Whether `key` is a name read through an alias.
+    aliased: bool,
+    aliases: Aliases,
+    /// A bit for each alias length, as `Object::lengths`: most names skip the aliases.
+    alias_lengths: u64,
+    /// The aliases met and not yet taken by `aliases_used`.
+    used: BTreeMap<String, String>,
     /// The open container, built only while it or an ancestor is emitted: elsewhere
     /// `keepStack: false` deletes each member once it is complete.
     value: Option<Value>,
@@ -570,7 +593,13 @@ impl Tokens {
             (Expect::VALUE, token @ (Token::LeftBrace | Token::LeftBracket)) => {
                 let emit = self.should_emit();
                 let build = emit || self.value.is_some();
-                self.stack.push(Frame { key: self.key.take(), value: self.value.take(), emit });
+                let key = self.key.take();
+                self.stack.push(Frame {
+                    key,
+                    aliased: self.aliased,
+                    value: self.value.take(),
+                    emit,
+                });
                 if matches!(token, Token::LeftBracket) {
                     self.key = Some(Key::Index(0));
                     let spare = &mut self.spare.arrays;
@@ -584,7 +613,15 @@ impl Tokens {
             }
             // `this.value.length === 0`, which only holds right after `[`.
             (Expect::VALUE, Token::RightBracket) if self.key == Some(Key::Index(0)) => self.pop(),
-            (Expect::KEY, Token::Value(Value::String(name))) => {
+            (Expect::KEY, Token::Value(Value::String(mut name))) => {
+                self.aliased = false;
+                if self.alias_lengths & length_bit(&name) != 0
+                    && let Some(alias) = self.aliases.get(&name)
+                {
+                    self.aliased = true;
+                    name.clear();
+                    name.push_str(alias.take(&mut self.used));
+                }
                 self.key = Some(Key::Name(name));
                 self.expect = Expect::COLON;
                 Ok(())
@@ -623,6 +660,7 @@ impl Tokens {
         let value = self.value.take();
         let frame = self.stack.pop().expect("a container is open");
         self.key = frame.key;
+        self.aliased = frame.aliased;
         self.value = frame.value;
         self.expect = Expect::COMMA;
         self.emit(value, frame.emit)
@@ -644,7 +682,12 @@ impl Tokens {
         } else if let (Some(parent), Some(value)) = (&mut self.value, value) {
             match (parent, key) {
                 (Value::Array(items), _) => items.push(value),
-                (Value::Object(o), Some(Key::Name(name))) => o.set(name, value),
+                // A member read through an alias gives way to one under its own name.
+                (Value::Object(o), Some(Key::Name(name))) => {
+                    if !(self.aliased && o.members.iter().any(|(k, _)| *k == name)) {
+                        o.set(name, value);
+                    }
+                }
                 _ => unreachable!("object members have names"),
             }
         }

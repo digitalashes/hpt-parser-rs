@@ -20,6 +20,12 @@ compression = "zstd:3"
 row_group_size = 256000
 chunk_size = 0
 
+# Non-standard names a file may use for a CMS name: [aliases.csv] lists CSV column names
+# (a wide file's payer-specific column without its payer and plan), [aliases.json] JSON
+# member names. A file with both reads the CMS name.
+[aliases.json]
+modifier_code = ["modifiers"]
+
 [[column]]
 name = "charge_description"
 from = "charge.description"

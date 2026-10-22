@@ -365,3 +365,70 @@ fn json_errors() {
     assert_eq!(message, "standard_charge_information is not an array");
     assert_eq!(parser.metadata().version, None);
 }
+
+#[test]
+fn aliases() {
+    type Pairs = &'static [(&'static str, &'static str)];
+    let cases: &[(&str, Pairs, Pairs)] = &[
+        (
+            "tall-3.0.0.csv",
+            &[("standard_charge | gross,", "Gross_Charges ,"), ("median_amount", "median")],
+            &[("gross_charges", "standard_charge | gross"), ("median", "median_amount")],
+        ),
+        (
+            "wide-3.0.0.csv",
+            &[("| negotiated_dollar", "| negotiated_dollars"), ("median_amount |", "median |")],
+            &[
+                ("standard_charge | negotiated_dollars", "standard_charge | negotiated_dollar"),
+                ("median", "median_amount"),
+                ("unused", "setting"),
+            ],
+        ),
+        (
+            "sample-3.0.0.json",
+            &[("\"payers_information\"", "\"payers\""), ("\"modifier_code\"", "\"modifiers\"")],
+            &[("payers", "payers_information"), ("modifiers", "modifier_code")],
+        ),
+    ];
+    for &(name, replace, aliases) in cases {
+        let (records, metadata) = read(name);
+        let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+        let mut text = std::fs::read_to_string(path).unwrap();
+        for (from, to) in replace {
+            assert!(text.contains(from), "{name}: {from}");
+            text = text.replace(from, to);
+        }
+        let format = if name.ends_with("json") { Format::Json } else { Format::Csv };
+        let pairs = aliases.iter().map(|&(a, t)| (a.to_owned(), t.to_owned()));
+        let mut parser = Parser::new(text.as_bytes(), format).with_aliases(pairs);
+        let got = parser.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
+        assert_eq!(got, records, "{name}");
+        let mut got = parser.metadata().clone();
+        let used = std::mem::take(&mut got.aliases_used);
+        assert_eq!(got, metadata, "{name}");
+        let expected = aliases.iter().filter(|(a, _)| *a != "unused");
+        let expected = expected.map(|&(a, t)| (a.to_owned(), t.to_owned())).collect();
+        assert_eq!(used, expected, "{name}");
+    }
+}
+
+/// A file with both a name and an alias of it reads the name, in either order.
+#[test]
+fn alias_gives_way() {
+    let aliases = || [("gross_charges".to_owned(), "standard_charge | gross".to_owned())];
+    for row3 in ["gross_charges,standard_charge | gross", "standard_charge | gross,gross_charges"] {
+        let file = format!("version\n3.0.0\ndescription,payer_name,plan_name,{row3}\nX,,,1,2\n");
+        let mut parser = Parser::new(file.as_bytes(), Format::Csv).with_aliases(aliases());
+        let record = parser.next().unwrap().unwrap();
+        let expected = if row3.starts_with("gross") { "2" } else { "1" };
+        assert_eq!(record.charge.gross_charge.as_deref(), Some(expected), "{row3}");
+        assert_eq!(parser.metadata().aliases_used.len(), 1);
+    }
+    let aliases = [("modifiers".to_owned(), "modifier_code".to_owned())];
+    let file = r#"{"standard_charge_information": [{"standard_charges": [
+        {"modifiers": ["A"], "modifier_code": ["B"]}, {"modifier_code": ["B"], "modifiers": ["A"]},
+        {"modifiers": ["A"]}]}]}"#;
+    let parser = Parser::new(file.as_bytes(), Format::Json).with_aliases(aliases);
+    let modifiers: Vec<_> = parser.map(|r| r.unwrap().charge.modifiers.clone()).collect();
+    assert_eq!(modifiers, [list(&["B"]), list(&["B"]), list(&["A"])]);
+}

@@ -8,14 +8,15 @@
 
 mod reader;
 
-use crate::{Charge, Code, Error, Layout, Metadata, Payer, Record, text};
+use crate::{Aliases, Charge, Code, Error, Layout, Metadata, Payer, Record, text};
 use reader::Reader;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::Read;
 
 pub struct Parser<R> {
     reader: Reader<R>,
     pub metadata: Metadata,
+    pub aliases: Aliases,
     /// Set once rows 1 to 3 are read.
     columns: Option<Columns>,
     /// One entry per payer/plan block, `None` between rows.
@@ -73,6 +74,7 @@ impl<R: Read> Parser<R> {
         Parser {
             reader: Reader::new(input),
             metadata: Metadata::default(),
+            aliases: Aliases::default(),
             columns: None,
             payers: Vec::new(),
         }
@@ -98,7 +100,8 @@ impl<R: Read> Parser<R> {
 
     /// Rows 1 to 3: the header into `metadata`, the column names into `Columns`.
     fn header(&mut self) -> Result<Columns, Error> {
-        let names = self.names()?;
+        let mut names = self.names()?;
+        rename(&mut names, &mut self.aliases, &mut self.metadata.aliases_used);
         let values = self.names()?;
         for (i, value) in values.iter().enumerate() {
             if let Some(name) = names.get(i) {
@@ -106,7 +109,8 @@ impl<R: Read> Parser<R> {
             }
         }
         let line = self.reader.line;
-        let row3 = self.names()?;
+        let mut row3 = self.names()?;
+        rename(&mut row3, &mut self.aliases, &mut self.metadata.aliases_used);
         if row3.iter().all(String::is_empty) {
             return Err(Error::Csv { line, message: "row 3 (the column names) is blank".into() });
         }
@@ -131,6 +135,49 @@ impl<R: Read> Parser<R> {
         }
         Ok(cells)
     }
+}
+
+/// Replaces the aliases among a header row's names by the names they stand for, unless the
+/// row has that name too. In a wide file's payer-specific column the alias is the name
+/// without its payer and plan.
+fn rename(names: &mut [String], aliases: &mut Aliases, used: &mut BTreeMap<String, String>) {
+    if aliases.0.is_empty() {
+        return;
+    }
+    let keys: HashSet<String> = names.iter().map(|n| key(n)).collect();
+    for name in names {
+        let p: Vec<&str> = parts(name).collect();
+        let renamed = if let Some(alias) = aliases.get(&key(name)) {
+            alias.take(used).to_owned()
+        } else {
+            let (field, payer) = match p[..] {
+                [a, payer, plan] => (key(a), (payer, plan)),
+                [a, payer, plan, b] => (key(&format!("{a}|{b}")), (payer, plan)),
+                _ => continue,
+            };
+            let Some(alias) = aliases.get(&field) else { continue };
+            match (p.len(), &parts(alias.take(used)).collect::<Vec<_>>()[..]) {
+                (3, [a]) => format!("{a} | {} | {}", payer.0, payer.1),
+                (4, [a, b]) => format!("{a} | {} | {} | {b}", payer.0, payer.1),
+                _ => continue,
+            }
+        };
+        if !keys.contains(&key(&renamed)) {
+            *name = renamed;
+        }
+    }
+}
+
+/// Whether row 1 or row 3 may name a column `name`.
+#[cfg(feature = "config")]
+pub(crate) fn known(name: &str) -> bool {
+    let key = key(name);
+    let mut header = Metadata::default();
+    header_field(&mut header, name, "x");
+    header != Metadata::default()
+        || column(&key).is_some()
+        || code_column(&key).is_some()
+        || payer_column(name).is_some()
 }
 
 /// One header field from row 1's `name` and row 2's `value`. Unknown names are ignored.
@@ -199,24 +246,12 @@ impl Columns {
                         Slot::Payer(block, kind)
                     }
                     Some(_) => return None,
-                    None => match k.as_str() {
-                        "DESCRIPTION" => Slot::Description,
-                        "SETTING" => Slot::Setting,
-                        "BILLING_CLASS" => Slot::BillingClass,
-                        "DRUG_UNIT_OF_MEASUREMENT" => Slot::DrugUnit,
-                        "DRUG_TYPE_OF_MEASUREMENT" => Slot::DrugUnitType,
-                        "MODIFIERS" => Slot::Modifiers,
-                        "STANDARD_CHARGE|GROSS" => Slot::Gross,
-                        "STANDARD_CHARGE|DISCOUNTED_CASH" => Slot::DiscountedCash,
-                        "STANDARD_CHARGE|MIN" => Slot::Minimum,
-                        "STANDARD_CHARGE|MAX" => Slot::Maximum,
-                        "ADDITIONAL_GENERIC_NOTES" => Slot::Notes,
-                        k => {
-                            let (n, is_type) = code_column(k)?;
-                            let i = numbers.iter().position(|m| *m == n).expect("collected");
-                            if is_type { Slot::CodeType(i) } else { Slot::Code(i) }
-                        }
-                    },
+                    None if let Some(slot) = column(k) => slot,
+                    None => {
+                        let (n, is_type) = code_column(k)?;
+                        let i = numbers.iter().position(|m| *m == n).expect("collected");
+                        if is_type { Slot::CodeType(i) } else { Slot::Code(i) }
+                    }
                 };
                 seen.insert(slot).then_some(slot)
             })
@@ -290,6 +325,24 @@ impl Columns {
     }
 }
 
+/// A charge item column's slot, from its key; codes and payer columns are matched apart.
+fn column(key: &str) -> Option<Slot> {
+    Some(match key {
+        "DESCRIPTION" => Slot::Description,
+        "SETTING" => Slot::Setting,
+        "BILLING_CLASS" => Slot::BillingClass,
+        "DRUG_UNIT_OF_MEASUREMENT" => Slot::DrugUnit,
+        "DRUG_TYPE_OF_MEASUREMENT" => Slot::DrugUnitType,
+        "MODIFIERS" => Slot::Modifiers,
+        "STANDARD_CHARGE|GROSS" => Slot::Gross,
+        "STANDARD_CHARGE|DISCOUNTED_CASH" => Slot::DiscountedCash,
+        "STANDARD_CHARGE|MIN" => Slot::Minimum,
+        "STANDARD_CHARGE|MAX" => Slot::Maximum,
+        "ADDITIONAL_GENERIC_NOTES" => Slot::Notes,
+        _ => return None,
+    })
+}
+
 /// A payer-specific column's field, with the payer and plan in a wide file's names:
 /// `standard_charge | negotiated_dollar` or `count` in a tall file,
 /// `standard_charge | <payer> | <plan> | negotiated_dollar` or `count | <payer> | <plan>`
@@ -343,7 +396,7 @@ fn parts(name: &str) -> impl Iterator<Item = &str> {
 }
 
 /// A column name compared per part, trimmed and case-insensitive.
-fn key(name: &str) -> String {
+pub(crate) fn key(name: &str) -> String {
     parts(name).map(str::to_uppercase).collect::<Vec<_>>().join("|")
 }
 

@@ -4,7 +4,9 @@
 
 mod parse;
 
-use crate::{Charge, Code, Error, Layout, Metadata, ModifierInfo, ModifierPayer, Payer, Record};
+use crate::{
+    Aliases, Charge, Code, Error, Layout, Metadata, ModifierInfo, ModifierPayer, Payer, Record,
+};
 use parse::{Key, Value};
 use std::collections::VecDeque;
 use std::io::Read;
@@ -25,6 +27,56 @@ const PATHS: &[&[&str]] = &[
     &["standard_charge_information", "*"],
 ];
 
+/// Every member name read, which an alias may stand for.
+pub(crate) const NAMES: &[&str] = &[
+    "hospital_name",
+    "last_updated_on",
+    "license_information",
+    "license_number",
+    "state",
+    "version",
+    "hospital_address",
+    "hospital_location",
+    "location_name",
+    "affirmation",
+    "confirm_affirmation",
+    "attestation",
+    "confirm_attestation",
+    "attester_name",
+    "modifier_information",
+    "modifier_payer_information",
+    "type_2_npi",
+    "standard_charge_information",
+    "description",
+    "code_information",
+    "code",
+    "type",
+    "drug_information",
+    "unit",
+    "standard_charges",
+    "setting",
+    "billing_class",
+    "modifier_code",
+    "gross_charge",
+    "discounted_cash",
+    "minimum",
+    "maximum",
+    "additional_generic_notes",
+    "payers_information",
+    "payer_name",
+    "plan_name",
+    "standard_charge_dollar",
+    "standard_charge_percentage",
+    "standard_charge_algorithm",
+    "methodology",
+    "estimated_amount",
+    "median_amount",
+    "10th_percentile",
+    "90th_percentile",
+    "count",
+    "additional_payer_notes",
+];
+
 pub struct Parser<R> {
     values: parse::Parser<R>,
     pub metadata: Metadata,
@@ -36,9 +88,17 @@ impl<R: Read> Parser<R> {
         Parser { values: parse::Parser::new(input, PATHS), metadata }
     }
 
+    pub fn set_aliases(&mut self, aliases: Aliases) {
+        self.values.set_aliases(aliases);
+    }
+
     /// Reads up to the next charge item and queues its records; false at the end.
+    // ponytail: a top-level member read through an alias does not give way to one under its
+    // own name (the later one wins, as with a repeated name); the members stream, so that
+    // takes remembering which names came
     pub fn fill(&mut self, pending: &mut VecDeque<Record>) -> Result<bool, Error> {
         while let Some((key, value)) = self.values.next()? {
+            self.metadata.aliases_used.append(self.values.aliases_used());
             match &key {
                 Key::Index(i) => item(&value, *i as u64, pending),
                 Key::Name(name) => header_field(&mut self.metadata, name, &value),
@@ -170,5 +230,20 @@ fn array(v: Option<&Value>) -> std::slice::Iter<'_, Value> {
     match v {
         Some(Value::Array(items)) => items.iter(),
         _ => [].iter(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every name the code reads is in `NAMES`, so it can be an alias target.
+    #[test]
+    fn names() {
+        let code = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+        let names = code.split("const NAMES").nth(1).unwrap().split("];").nth(1).unwrap();
+        for literal in names.split('"').skip(1).step_by(2) {
+            if literal.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+                assert!(super::NAMES.contains(&literal), "{literal}");
+            }
+        }
     }
 }

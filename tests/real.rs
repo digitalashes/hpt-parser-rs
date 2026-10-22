@@ -54,8 +54,9 @@ fn real_parquet() {
     }
     let file = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
     let start = Instant::now();
-    let parser = Parser::new(file, format(&path));
-    let summary = write(parser, &Config::builtin(), &output, |_| {}).unwrap();
+    let config = Config::builtin();
+    let parser = Parser::new(file, format(&path)).with_aliases(config.aliases(format(&path)));
+    let summary = write(parser, &config, &output, |_| {}).unwrap();
     let size = std::fs::metadata(&output.path).unwrap().len();
     let reader = SerializedFileReader::new(std::fs::File::open(&output.path).unwrap()).unwrap();
     assert_eq!(reader.metadata().file_metadata().num_rows().cast_unsigned(), summary.records);

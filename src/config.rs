@@ -21,12 +21,16 @@
 //! `{ map = { from = "to" } }`, `{ match = "<domain>", fuzzy = 0.8 }` (the CMS values of
 //! `setting`, `methodology`, `code_type`, `drug_unit` or `billing_class`), `{ split = "|" }`,
 //! `{ default = "x" }`, `codes_by_type`, `codes_list`, `hash`, `{ plugin = "name.fn" }`.
+//!
+//! `[aliases.csv]` and `[aliases.json]` name the non-standard names a file of that format
+//! may use for a CMS name: `"standard_charge | gross" = ["gross_charges"]` (see
+//! [`crate::Parser::with_aliases`]).
 
 use crate::text::{is_space, split, trim};
-use crate::{Code, Error, Layout, Metadata, Record};
+use crate::{Code, Error, Format, Layout, Metadata, Record};
 use serde::Deserialize;
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -36,6 +40,7 @@ pub const BUILTIN: &str = include_str!("default.toml");
 #[derive(Clone, Debug)]
 pub struct Config {
     pub output: Output,
+    pub aliases: Aliases,
     pub plugins: Vec<Plugin>,
     pub columns: Vec<Column>,
     pub filters: Vec<Filter>,
@@ -50,6 +55,16 @@ pub struct Output {
     pub row_group_size: Option<usize>,
     /// Records per output file, 0 for one file.
     pub chunk_size: Option<u64>,
+}
+
+/// `[aliases.csv]`, `[aliases.json]`: each CMS name with the names read as it.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Aliases {
+    #[serde(default)]
+    pub csv: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub json: BTreeMap<String, Vec<String>>,
 }
 
 /// `[[plugin]]`: a WASM module, its functions named `<name>.<function>`.
@@ -159,6 +174,8 @@ struct Raw {
     #[serde(default)]
     output: Output,
     #[serde(default)]
+    aliases: Aliases,
+    #[serde(default)]
     plugin: Vec<Plugin>,
     #[serde(default)]
     column: Vec<RawColumn>,
@@ -197,7 +214,8 @@ impl Config {
     /// # Errors
     ///
     /// [`Error::Config`] for TOML that does not parse, an unknown key, field, transform or
-    /// domain, a column defined twice or a plugin function of an undeclared plugin.
+    /// domain, a column defined twice, a plugin function of an undeclared plugin, an alias
+    /// of a name the parser does not read or one alias of two names.
     pub fn parse(text: &str) -> Result<Self, Error> {
         let error = |message: String| Error::Config { message };
         let raw: Raw = toml::from_str(text).map_err(|e| error(e.to_string().trim_end().into()))?;
@@ -214,7 +232,23 @@ impl Config {
         for f in &raw.filter {
             plugin_function(&f.plugin, &raw.plugin).map_err(|e| error(format!("filter: {e}")))?;
         }
-        Ok(Config { output: raw.output, plugins: raw.plugin, columns, filters: raw.filter })
+        check_aliases(&raw.aliases).map_err(error)?;
+        Ok(Config {
+            output: raw.output,
+            aliases: raw.aliases,
+            plugins: raw.plugin,
+            columns,
+            filters: raw.filter,
+        })
+    }
+
+    /// The aliases for a file of `format`, as [`crate::Parser::with_aliases`] takes them.
+    pub fn aliases(&self, format: Format) -> impl Iterator<Item = (String, String)> + '_ {
+        let table = match format {
+            Format::Csv => &self.aliases.csv,
+            Format::Json => &self.aliases.json,
+        };
+        (table.iter()).flat_map(|(target, names)| names.iter().map(|n| (n.clone(), target.clone())))
     }
 
     /// # Panics
@@ -224,6 +258,27 @@ impl Config {
     pub fn builtin() -> Self {
         Self::parse(BUILTIN).expect("the built-in config is tested")
     }
+}
+
+fn check_aliases(aliases: &Aliases) -> Result<(), String> {
+    for (format, table) in [(Format::Csv, &aliases.csv), (Format::Json, &aliases.json)] {
+        let section = if format == Format::Csv { "aliases.csv" } else { "aliases.json" };
+        let mut targets = HashMap::new();
+        for (target, names) in table {
+            if !crate::known(format, target) {
+                return Err(format!("{section}: `{target}` is not a name the parser reads"));
+            }
+            for name in names {
+                let key = if format == Format::Csv { crate::csv::key(name) } else { name.clone() };
+                if let Some(other) = targets.insert(key, target).filter(|t| *t != target) {
+                    return Err(format!(
+                        "{section}: `{name}` is an alias of `{other}` and `{target}`"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn column(c: RawColumn, plugins: &[Plugin]) -> Result<Column, String> {
@@ -854,6 +909,18 @@ mod tests {
             message("[[filter]]\nplugin = \"q.keep\""),
             "filter: plugin `q` is not declared in a [[plugin]] table"
         );
+        assert_eq!(
+            message("[aliases.json]\nmodifiers = [\"m\"]"),
+            "aliases.json: `modifiers` is not a name the parser reads"
+        );
+        assert_eq!(
+            message("[aliases.csv]\nsetting = [\"Place\"]\ncount = [\"place\"]"),
+            "aliases.csv: `Place` is an alias of `count` and `setting`"
+        );
+        let ok = "[aliases.csv]\n\"standard_charge | gross\" = [\"gross\"]\n\
+            \"license_number | NY\" = [\"license\"]\n\"count | Acme | PPO\" = [\"n\"]\n\
+            [aliases.json]\nsetting = [\"place\"]\nsetting_2 = []";
+        assert_eq!(message(ok), "aliases.json: `setting_2` is not a name the parser reads");
     }
 
     #[test]

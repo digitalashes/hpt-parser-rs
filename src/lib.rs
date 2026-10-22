@@ -189,6 +189,9 @@ pub struct Metadata {
     /// JSON `modifier_information`; CSV files list modifiers as rows of their own, which
     /// come out as records.
     pub modifiers: Vec<ModifierInfo>,
+    /// The aliases given to [`Parser::with_aliases`] that the file has, each with the
+    /// CMS name it stands for.
+    pub aliases_used: BTreeMap<String, String>,
     /// Fields the caller adds; the parser leaves it empty.
     pub extra: BTreeMap<String, String>,
 }
@@ -303,6 +306,28 @@ impl<R: Read> Parser<R> {
         Parser { inner, pending: VecDeque::new(), done: false }
     }
 
+    /// Reads the non-standard names in `aliases` as the CMS names they map to: CSV column
+    /// names (compared as the parser compares them) and JSON member names (exact) at any
+    /// depth. In a wide file's payer-specific column the alias is the name without its
+    /// payer and plan: `standard_charge | negotiated_dollars` covers
+    /// `standard_charge | <payer> | <plan> | negotiated_dollars`. Where a file has both a
+    /// name and an alias of it, the name is read. Call it before the first record.
+    #[must_use]
+    pub fn with_aliases(mut self, aliases: impl IntoIterator<Item = (String, String)>) -> Self {
+        let key = |name: &str| match self.inner {
+            Inner::Csv(_) => csv::key(name),
+            Inner::Json(_) => name.to_owned(),
+        };
+        let aliases = (aliases.into_iter())
+            .map(|(name, target)| Alias { key: key(&name), name, target, used: false })
+            .collect();
+        match &mut self.inner {
+            Inner::Csv(p) => p.aliases = Aliases(aliases),
+            Inner::Json(p) => p.set_aliases(Aliases(aliases)),
+        }
+        self
+    }
+
     /// The header as far as it has been read: for CSV complete once the first record is
     /// out, for JSON once the parser has returned `None`.
     pub fn metadata(&self) -> &Metadata {
@@ -340,6 +365,47 @@ impl<R: Read> Iterator for Parser<R> {
 }
 
 impl<R: Read> FusedIterator for Parser<R> {}
+
+/// Non-standard names and the CMS names they stand for.
+#[derive(Default)]
+struct Aliases(Vec<Alias>);
+
+struct Alias {
+    /// `name` as the format compares names.
+    key: String,
+    name: String,
+    target: String,
+    used: bool,
+}
+
+impl Aliases {
+    /// The alias whose key is `key`.
+    // ponytail: a linear scan, cheaper than hashing every name for the few aliases a file
+    // needs; a map past a few dozen
+    fn get(&mut self, key: &str) -> Option<&mut Alias> {
+        self.0.iter_mut().find(|a| a.key == key)
+    }
+}
+
+impl Alias {
+    /// The CMS name, the alias recorded in `used` the first time.
+    fn take(&mut self, used: &mut BTreeMap<String, String>) -> &str {
+        if !self.used {
+            self.used = true;
+            used.insert(self.name.clone(), self.target.clone());
+        }
+        &self.target
+    }
+}
+
+/// Whether `name` is a name the parser reads in `format`, as an alias target must be.
+#[cfg(feature = "config")]
+fn known(format: Format, name: &str) -> bool {
+    match format {
+        Format::Csv => csv::known(name),
+        Format::Json => json::NAMES.contains(&name),
+    }
+}
 
 /// Queues a record per payer, all sharing the charge, or one with `payer: None` when there
 /// are none.
