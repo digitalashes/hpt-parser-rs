@@ -1,3 +1,5 @@
+//! Parquet output through the config: types, codecs, row groups, chunks, the footer.
+
 #![cfg(feature = "config")]
 
 use hpt_parser::config::{Config, Value};

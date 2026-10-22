@@ -1,3 +1,5 @@
+//! The parser over the fixtures: records, metadata, header and syntax errors, aliases.
+
 #![expect(clippy::unwrap_used, reason = "a broken fixture should fail the test")]
 
 use hpt_parser::{

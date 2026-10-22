@@ -29,7 +29,9 @@ pub const METADATA_KEY: &str = "hpt.metadata";
 /// Where and how to write.
 #[derive(Clone, Debug)]
 pub struct Output {
+    /// The file, or the name the chunk files are made from.
     pub path: PathBuf,
+    /// The codec of every column.
     pub compression: Compression,
     /// Rows per row group, 0 for one row group per file.
     pub row_group_size: usize,
@@ -115,15 +117,20 @@ pub fn parse_compression(s: &str) -> Result<Compression, Error> {
 /// A file once it is closed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Chunk {
+    /// Where it was written.
     pub path: PathBuf,
     /// 1-based.
     pub index: u32,
+    /// Rows in it.
     pub records: u64,
 }
 
+/// What [`write()`] wrote.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
+    /// Files written.
     pub chunks: u32,
+    /// Records written, over all files.
     pub records: u64,
     /// A JSON file's metadata came after records: rows written before it have nulls (or
     /// stale values) in the columns that read `metadata.*`. The footers have what was known

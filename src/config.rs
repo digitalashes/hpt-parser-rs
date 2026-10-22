@@ -37,12 +37,18 @@ use std::path::{Path, PathBuf};
 /// The built-in config: every record field as a column of its own, unchanged.
 pub const BUILTIN: &str = include_str!("default.toml");
 
+/// A loaded config: [`Config::load`], [`Config::parse`] or [`Config::builtin`].
 #[derive(Clone, Debug)]
 pub struct Config {
+    /// `[output]`.
     pub output: Output,
+    /// `[aliases.csv]`, `[aliases.json]`.
     pub aliases: Aliases,
+    /// `[[plugin]]`.
     pub plugins: Vec<Plugin>,
+    /// `[[column]]`, in order.
     pub columns: Vec<Column>,
+    /// `[[filter]]`.
     pub filters: Vec<Filter>,
 }
 
@@ -52,6 +58,7 @@ pub struct Config {
 pub struct Output {
     /// `none`, `snappy`, `gzip[:level]`, `lz4`, `zstd[:level]`, `brotli[:level]`.
     pub compression: Option<String>,
+    /// Rows per row group, 0 for one per file.
     pub row_group_size: Option<usize>,
     /// Records per output file, 0 for one file.
     pub chunk_size: Option<u64>,
@@ -61,8 +68,10 @@ pub struct Output {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Aliases {
+    /// CSV column names.
     #[serde(default)]
     pub csv: BTreeMap<String, Vec<String>>,
+    /// JSON member names.
     #[serde(default)]
     pub json: BTreeMap<String, Vec<String>>,
 }
@@ -71,7 +80,9 @@ pub struct Aliases {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plugin {
+    /// The first part of its functions' names.
     pub name: String,
+    /// The `.wasm` file.
     pub path: PathBuf,
     /// Handed to the plugin.
     #[serde(default)]
@@ -82,19 +93,27 @@ pub struct Plugin {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Filter {
+    /// `<plugin>.<function>`.
     pub plugin: String,
 }
 
+/// `[[column]]`: one output column.
 #[derive(Clone, Debug)]
 pub struct Column {
+    /// The column's name in the output.
     pub name: String,
+    /// What the value is read from.
     pub source: Source,
+    /// `type`.
     pub kind: Type,
+    /// `transform`, run in order before the cast.
     pub transforms: Vec<Transform>,
 }
 
+/// Where a column's value comes from.
 #[derive(Clone, Debug)]
 pub enum Source {
+    /// `from`: one field, or several whose texts are joined by `|`.
     Fields(Vec<Field>),
     /// A plugin function computes the value.
     Plugin(String),
@@ -102,35 +121,52 @@ pub enum Source {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// A column's type; a value that does not cast is null.
 pub enum Type {
+    /// The text.
     String,
+    /// A finite number.
     F64,
+    /// A whole number.
     I64,
+    /// `true`, `yes`, `y`, `1` or `false`, `no`, `n`, `0`, in any case.
     Bool,
     /// `YYYY-MM-DD` or `M/D/YYYY`, as days since 1970-01-01.
     Date,
     /// JSON text: a list or the codes as an array, other text as a string.
     Json,
+    /// A list of strings: a list field, or text after `split`.
     List,
 }
 
+/// A step that changes a column's value before the cast.
 #[derive(Clone, Debug)]
 pub enum Transform {
+    /// Leading and trailing whitespace.
     Trim,
+    /// Upper case.
     Upper,
+    /// Lower case.
     Lower,
+    /// Drops `$`, `,` and spaces.
     Money,
+    /// A number to this many digits after the point.
     Round(usize),
     /// Exact match after trimming, then case-insensitive.
     Map(Vec<(String, String)>),
     /// A domain's values, the `fuzzy` similarity.
     Match(&'static [&'static str], Option<f64>),
+    /// Text to a list, on this separator.
     Split(String),
     /// For a null or empty value.
     Default(String),
+    /// Codes as `{"TYPE":["code",...]}` JSON, sorted.
     CodesByType,
+    /// Codes as a list of `TYPE:code`, sorted.
     CodesList,
+    /// A 128-bit FNV-1a hash of the text, as 32 hex digits.
     Hash,
+    /// A plugin function, `<plugin>.<function>`.
     Plugin(String),
 }
 
@@ -157,11 +193,17 @@ const DOMAINS: &[(&str, &[&str])] = &[
 /// changed it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value<'a> {
+    /// No value, or one that does not cast.
     Null,
+    /// A `string` or `json` column's text.
     Text(Cow<'a, str>),
+    /// A `list` column's items.
     List(Vec<String>),
+    /// An `f64` column's number.
     F64(f64),
+    /// An `i64` column's number.
     I64(i64),
+    /// A `bool` column's value.
     Bool(bool),
     /// Days since 1970-01-01.
     Date(i32),

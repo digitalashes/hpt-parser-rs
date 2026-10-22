@@ -30,6 +30,10 @@
 //! assert_eq!(parser.metadata().license_state.as_deref(), Some("NY"));
 //! ```
 
+#[cfg(all(doctest, feature = "parquet"))]
+#[doc = include_str!("../README.md")]
+struct Readme;
+
 #[cfg(feature = "config")]
 pub mod config;
 mod csv;
@@ -47,7 +51,9 @@ use std::sync::Arc;
 /// The input's format, given by the caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
+    /// A tall or wide CSV file; the header tells which.
     Csv,
+    /// A JSON file.
     Json,
 }
 
@@ -59,6 +65,7 @@ pub enum Layout {
     Tall,
     /// CSV with a column block per payer/plan: one row per item.
     Wide,
+    /// A JSON file: one record per `payers_information` entry.
     Json,
 }
 
@@ -160,6 +167,7 @@ pub struct Payer {
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "parquet", derive(serde::Serialize))]
 pub struct Metadata {
+    /// Known once the header is read.
     pub layout: Option<Layout>,
     /// CSV and JSON `version`.
     pub version: Option<String>,
@@ -200,8 +208,11 @@ pub struct Metadata {
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "parquet", derive(serde::Serialize))]
 pub struct ModifierInfo {
+    /// `code`.
     pub code: Option<String>,
+    /// `description`.
     pub description: Option<String>,
+    /// `setting`.
     pub setting: Option<String>,
     /// `modifier_payer_information`.
     pub payers: Vec<ModifierPayer>,
@@ -211,8 +222,11 @@ pub struct ModifierInfo {
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(feature = "parquet", derive(serde::Serialize))]
 pub struct ModifierPayer {
+    /// `payer_name`.
     pub name: Option<String>,
+    /// `plan_name`.
     pub plan: Option<String>,
+    /// `description`: what the modifier does for this payer/plan.
     pub description: Option<String>,
 }
 
@@ -220,23 +234,28 @@ pub struct ModifierPayer {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
+    /// Reading the input or writing the output.
     Io(io::Error),
-    /// The CSV header is missing or names no known layout; `line` is physical, 1-based.
+    /// The CSV header is missing or names no known layout.
     Csv {
+        /// Physical, 1-based.
         line: u64,
+        /// What is wrong.
         message: String,
     },
     /// JSON syntax, no JSON value, a top-level value that is not an object, or
-    /// `standard_charge_information` not an array; `line` and `column` are 1-based, the
-    /// column in chars.
+    /// `standard_charge_information` not an array.
     Json {
+        /// 1-based.
         line: u64,
+        /// 1-based, in chars.
         column: u64,
+        /// What is wrong.
         message: String,
     },
-    /// An output config that does not load: the message names the file, the TOML
-    /// position or the column.
+    /// An output config that does not load.
     Config {
+        /// Names the file, the TOML position or the column.
         message: String,
     },
     /// Writing a Parquet file.

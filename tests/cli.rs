@@ -1,3 +1,5 @@
+//! The `hpt-parser` binary: usage errors, Parquet, chunks, metadata, notify events.
+
 #![cfg(feature = "parquet")]
 #![expect(clippy::unwrap_used, reason = "test helpers")]
 
