@@ -24,8 +24,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Records a plugin function gets in one call.
-const BATCH: usize = 8192;
+/// Records a plugin function gets in one call. A batch stays in the cache: 8192 took a
+/// 2.5 GB file with plugins from 3.7 to 4.6 s and its peak memory from 56 to 150 MB.
+const BATCH: usize = 512;
 
 /// The footer key that holds the file's metadata.
 pub const METADATA_KEY: &str = "hpt.metadata";
@@ -153,7 +154,7 @@ struct Open {
 /// after the whole input is read), then `on_chunk` gets it. No records at all still give one
 /// file with zero rows.
 ///
-/// With plugins, records are read in batches of 8192: the `[[filter]]` plugins drop records
+/// With plugins, records are read in batches of 512: the `[[filter]]` plugins drop records
 /// from a batch (dropped records count for nothing), then each plugin function is called
 /// once for the batch. The `[[metadata]]` plugins run once after the last record, and the
 /// fields they add are in the last file's footer.
@@ -220,7 +221,7 @@ pub fn write<R: Read>(
             }
             config.filter(&mut batch, metadata, call)?;
             // Columns with plugins for the whole batch, the others record by record: a
-            // column at a time over 8192 records misses the cache (chi: 8.2 s became 11.7 s).
+            // column at a time over 8192 records missed the cache (chi: 8.2 s became 11.7 s).
             let mut batched = Vec::with_capacity(config.columns.len());
             for c in &config.columns {
                 let values = c.has_plugins().then(|| c.values(&batch, metadata, call));

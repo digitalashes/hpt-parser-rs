@@ -249,7 +249,7 @@ plugin = "acme.source"        # adds fields to the metadata
 | filter          | `{"records":[...]}`   | `{"keep":[true,false,...]}`   |
 | metadata        | the metadata object   | `{"fields":{"key":"value"}}`  |
 
-- Calls are batched, up to 8192 records or values each, and an answer has one item per
+- Calls are batched, up to 512 records or values each, and an answer has one item per
   input, in order.
 - A record is flat, keyed by field name, with the hook's `fields` that have a value:
   `{"charge.description":"MRI brain","charge.codes":[{"code":"70551","type":"CPT"}],"payer.name":"Acme",...}`.
@@ -262,10 +262,10 @@ plugin = "acme.source"        # adds fields to the metadata
 - A plugin that fails, or answers in the wrong shape or with the wrong number of items,
   stops the run (exit 1).
 - The JSON costs time. On the 2.5 GB file above, a filter over every record and a
-  computed column take the run from 7.6 to 19 seconds with every field, and to 4.6
+  computed column take the run from 7.7 to 14 seconds with every field, and to 3.7
   seconds with `fields` naming the one each reads (the filter keeps 8% of the records,
   so fewer rows are written). In the plugin, read the fields into typed structs, not a
-  generic JSON value: that took 43 seconds.
+  generic JSON value: that took more than twice as long.
 
 A filter in Rust, for `[[filter]]` with `fields = ["charge.setting"]`, with `extism-pdk`
 and `serde` (derive) as dependencies and `crate-type = ["cdylib"]`:
