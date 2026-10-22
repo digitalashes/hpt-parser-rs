@@ -12,15 +12,12 @@ use crate::{Charge, Code, Error, Layout, Metadata, Payer, Record, text};
 use reader::Reader;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
-use std::sync::Arc;
 
 pub struct Parser<R> {
     reader: Reader<R>,
     pub metadata: Metadata,
     /// Set once rows 1 to 3 are read.
     columns: Option<Columns>,
-    /// The rest of a wide row's records.
-    pending: VecDeque<Record>,
     /// One entry per payer/plan block, `None` between rows.
     payers: Vec<Option<Payer>>,
 }
@@ -77,44 +74,26 @@ impl<R: Read> Parser<R> {
             reader: Reader::new(input),
             metadata: Metadata::default(),
             columns: None,
-            pending: VecDeque::new(),
             payers: Vec::new(),
         }
     }
 
-    pub fn next(&mut self) -> Option<Result<Record, Error>> {
+    /// Reads up to the next data row that is not blank and queues its records; false at
+    /// the end.
+    pub fn fill(&mut self, pending: &mut VecDeque<Record>) -> Result<bool, Error> {
         if self.columns.is_none() {
-            match self.header() {
-                Ok(columns) => self.columns = Some(columns),
-                Err(e) => return Some(Err(e)),
-            }
+            self.columns = Some(self.header()?);
         }
         let columns = self.columns.as_ref().expect("set above");
-        loop {
-            if let Some(record) = self.pending.pop_front() {
-                return Some(Ok(record));
-            }
-            let row = match self.reader.next_row() {
-                Ok(Some(row)) => row,
-                Ok(None) => return None,
-                Err(e) => return Some(Err(e.into())),
-            };
+        while let Some(row) = self.reader.next_row()? {
             let position = row.line;
-            let Some(charge) = columns.record(row.non_empty(), &mut self.payers) else {
-                continue;
-            };
-            let charge = Arc::new(charge);
-            self.pending.extend(
-                self.payers.iter_mut().filter_map(Option::take).map(|payer| Record {
-                    charge: Arc::clone(&charge),
-                    payer: Some(payer),
-                    position,
-                }),
-            );
-            if self.pending.is_empty() {
-                self.pending.push_back(Record { charge, payer: None, position });
+            if let Some(charge) = columns.record(row.non_empty(), &mut self.payers) {
+                let payers = self.payers.iter_mut().filter_map(Option::take);
+                crate::fan_out(pending, charge, payers, position);
+                return Ok(true);
             }
         }
+        Ok(false)
     }
 
     /// Rows 1 to 3: the header into `metadata`, the column names into `Columns`.

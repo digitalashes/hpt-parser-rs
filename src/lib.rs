@@ -1,14 +1,16 @@
 //! Parser for CMS Hospital Price Transparency machine-readable files: CSV tall and wide
-//! files, data dictionary 2.0.0 to 3.0.0.
+//! files and JSON files, data dictionary 2.0.0 to 3.0.0.
 //!
 //! [`Parser`] reads a file as a stream of flat [`Record`]s, one per charge item and
-//! payer/plan: a tall row is one record, a wide row one per payer/plan block with a value.
-//! A row without payer values is one record with `payer: None`. The file's header
-//! ([`Metadata`]) is kept apart from the records.
+//! payer/plan: a tall row is one record, a wide row one per payer/plan block with a value,
+//! a JSON `standard_charges` entry one per `payers_information` entry. A row or entry
+//! without payer values is one record with `payer: None`. The file's header ([`Metadata`])
+//! is kept apart from the records. A JSON file may put its header after the charge items:
+//! [`Parser::metadata`] is complete once the parser has returned `None`.
 //!
 //! Values are kept as the text in the file, trimmed; an empty cell is `None`. Nothing is
 //! checked or converted, so a sloppy value never fails the parse. An [`Error`] means the
-//! file cannot be read at all: IO, or no header.
+//! file cannot be read at all: IO, no CSV header, or JSON syntax.
 //!
 //! ```
 //! use hpt_parser::{Format, Parser};
@@ -27,9 +29,10 @@
 //! ```
 
 mod csv;
+mod json;
 mod text;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::io::{self, Read};
 use std::iter::FusedIterator;
@@ -39,6 +42,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
     Csv,
+    Json,
 }
 
 /// The file's layout, known once the header is read.
@@ -48,16 +52,19 @@ pub enum Layout {
     Tall,
     /// CSV with a column block per payer/plan: one row per item.
     Wide,
+    Json,
 }
 
 /// One charge item for one payer/plan.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
-    /// The item's fields, shared by every record of one CSV row.
+    /// The item's fields, shared by every record of one CSV row or JSON `standard_charges`
+    /// entry.
     pub charge: Arc<Charge>,
     /// `None` when the row has no payer-specific value.
     pub payer: Option<Payer>,
-    /// The physical line the CSV row starts on, 1-based.
+    /// The physical line the CSV row starts on, 1-based; the JSON item's index in
+    /// `standard_charge_information`, 0-based.
     pub position: u64,
 }
 
@@ -232,11 +239,14 @@ impl From<io::Error> for Error {
 /// Records from a file, read as they are asked for. After an `Err` it yields `None`.
 pub struct Parser<R> {
     inner: Inner<R>,
+    /// The rest of a row's or item's records.
+    pending: VecDeque<Record>,
     done: bool,
 }
 
 enum Inner<R> {
     Csv(csv::Parser<R>),
+    Json(json::Parser<R>),
 }
 
 impl<R: Read> Parser<R> {
@@ -244,14 +254,17 @@ impl<R: Read> Parser<R> {
     pub fn new(reader: R, format: Format) -> Self {
         let inner = match format {
             Format::Csv => Inner::Csv(csv::Parser::new(reader)),
+            Format::Json => Inner::Json(json::Parser::new(reader)),
         };
-        Parser { inner, done: false }
+        Parser { inner, pending: VecDeque::new(), done: false }
     }
 
-    /// The header as far as it has been read: complete once the first record is out.
+    /// The header as far as it has been read: for CSV complete once the first record is
+    /// out, for JSON once the parser has returned `None`.
     pub fn metadata(&self) -> &Metadata {
         match &self.inner {
             Inner::Csv(p) => &p.metadata,
+            Inner::Json(p) => &p.metadata,
         }
     }
 }
@@ -260,15 +273,46 @@ impl<R: Read> Iterator for Parser<R> {
     type Item = Result<Record, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
+        loop {
+            if let Some(record) = self.pending.pop_front() {
+                return Some(Ok(record));
+            }
+            if self.done {
+                return None;
+            }
+            let filled = match &mut self.inner {
+                Inner::Csv(p) => p.fill(&mut self.pending),
+                Inner::Json(p) => p.fill(&mut self.pending),
+            };
+            match filled {
+                Ok(more) => self.done = !more,
+                Err(e) => {
+                    self.done = true;
+                    return Some(Err(e));
+                }
+            }
         }
-        let item = match &mut self.inner {
-            Inner::Csv(p) => p.next(),
-        };
-        self.done = !matches!(item, Some(Ok(_)));
-        item
     }
 }
 
 impl<R: Read> FusedIterator for Parser<R> {}
+
+/// Queues a record per payer, all sharing the charge, or one with `payer: None` when there
+/// are none.
+fn fan_out(
+    pending: &mut VecDeque<Record>,
+    charge: Charge,
+    payers: impl IntoIterator<Item = Payer>,
+    position: u64,
+) {
+    let charge = Arc::new(charge);
+    let before = pending.len();
+    pending.extend(payers.into_iter().map(|payer| Record {
+        charge: Arc::clone(&charge),
+        payer: Some(payer),
+        position,
+    }));
+    if pending.len() == before {
+        pending.push_back(Record { charge, payer: None, position });
+    }
+}

@@ -1,13 +1,17 @@
 #![expect(clippy::unwrap_used, reason = "a broken fixture should fail the test")]
 
-use hpt_parser::{Charge, Code, Error, Format, Layout, Metadata, Parser, Payer, Record};
+use hpt_parser::{
+    Charge, Code, Error, Format, Layout, Metadata, ModifierInfo, ModifierPayer, Parser, Payer,
+    Record,
+};
 use std::sync::Arc;
 
 const AFFIRMATION: &str = "To the best of its knowledge and belief, the hospital has included all applicable standard charge information in accordance with the requirements of 45 CFR 180.50, and the information encoded is true, accurate, and complete as of the date indicated.";
 
 fn read(name: &str) -> (Vec<Record>, Metadata) {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
-    let mut parser = Parser::new(std::fs::File::open(path).unwrap(), Format::Csv);
+    let format = if name.ends_with("json") { Format::Json } else { Format::Csv };
+    let mut parser = Parser::new(std::fs::File::open(path).unwrap(), format);
     let records = parser.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
     (records, parser.metadata().clone())
 }
@@ -25,8 +29,12 @@ fn code(code: &str, code_type: Option<&str>) -> Code {
     Code { code: code.into(), code_type: code_type.map(Into::into) }
 }
 
-fn error(input: &str) -> Error {
-    let mut parser = Parser::new(input.as_bytes(), Format::Csv);
+fn error_csv(input: &str) -> Error {
+    error(input, Format::Csv)
+}
+
+fn error(input: &str, format: Format) -> Error {
+    let mut parser = Parser::new(input.as_bytes(), format);
     let e = parser.next().unwrap().unwrap_err();
     assert!(parser.next().is_none(), "fused after Err");
     e
@@ -139,13 +147,13 @@ fn header_errors() {
         Error::Csv { line, message } => (line, message),
         e => panic!("{e}"),
     };
-    assert_eq!(message(error("")).0, 1);
-    assert_eq!(message(error("hospital_name\nWest\n")).0, 3);
-    assert_eq!(message(error("a\nb\n\nx\n")), (3, "row 3 (the column names) is blank".into()));
+    assert_eq!(message(error_csv("")).0, 1);
+    assert_eq!(message(error_csv("hospital_name\nWest\n")).0, 3);
+    assert_eq!(message(error_csv("a\nb\n\nx\n")), (3, "row 3 (the column names) is blank".into()));
     let both = "a\nb\npayer_name,plan_name,count | Acme | PPO\n";
-    assert!(message(error(both)).1.contains("has both payer_name"));
+    assert!(message(error_csv(both)).1.contains("has both payer_name"));
     let neither = "a\nb\ndescription,payer_name,standard_charge | Acme | negotiated_dollar\n";
-    assert!(message(error(neither)).1.contains("has neither payer_name"));
+    assert!(message(error_csv(neither)).1.contains("has neither payer_name"));
 }
 
 #[test]
@@ -219,4 +227,134 @@ fn blank_header_rows() {
     assert_eq!(record.payer, None);
     assert!(parser.next().is_none());
     assert_eq!(parser.metadata().hospital_name, None);
+}
+
+#[test]
+fn json_2_2_0() {
+    let (records, metadata) = read("sample-2.2.0.json");
+    assert_eq!(
+        metadata,
+        Metadata {
+            layout: Some(Layout::Json),
+            version: s("2.2.0"),
+            hospital_name: s("West Mercy Hospital"),
+            last_updated_on: s("2024-07-01"),
+            location_name: list(&["West Mercy Hospital", "West Mercy Surgical Center"]),
+            hospital_address: list(&["12 Main Street, Fullerton, CA 92832"]),
+            license_number: s("50056"),
+            license_state: s("CA"),
+            attestation: s(AFFIRMATION),
+            attestation_confirmed: s("true"),
+            modifiers: vec![ModifierInfo {
+                code: s("50"),
+                description: s("Bilateral procedure"),
+                setting: None,
+                payers: vec![ModifierPayer {
+                    name: s("Region Health"),
+                    plan: s("HMO"),
+                    description: s("150 percent of the fee schedule"),
+                }],
+            }],
+            ..Metadata::default()
+        }
+    );
+    // Two payers, then a standard charge without any, then the second item.
+    assert_eq!(records.iter().map(|r| r.position).collect::<Vec<_>>(), [0, 0, 0, 1]);
+    assert!(Arc::ptr_eq(&records[0].charge, &records[1].charge));
+    assert!(!Arc::ptr_eq(&records[1].charge, &records[2].charge));
+    let hip = Charge {
+        description: s("Major hip and knee joint replacement"),
+        codes: vec![code("470", Some("MS-DRG")), code("175869", Some("LOCAL"))],
+        setting: s("inpatient"),
+        gross_charge: s("25000"),
+        discounted_cash: s("20000"),
+        minimum: s("18000"),
+        maximum: s("22000"),
+        ..Charge::default()
+    };
+    assert_eq!(*records[1].charge, hip);
+    assert_eq!(
+        records[1].payer,
+        Some(Payer {
+            name: s("Region Health"),
+            plan: s("HMO"),
+            percentage: s("60"),
+            estimated_amount: s("23145.98"),
+            methodology: s("percent of total billed charges"),
+            notes: s("Excludes implants"),
+            ..Payer::default()
+        })
+    );
+    assert_eq!(records[2].payer, None);
+    assert_eq!(records[2].charge.notes, s("Cash price only"));
+    assert_eq!(records[2].charge.setting, s("outpatient"));
+    assert_eq!(
+        *records[3].charge,
+        Charge {
+            description: s("Infliximab 10 mg"),
+            codes: vec![code("J1745", Some("HCPCS"))],
+            setting: s("outpatient"),
+            drug_unit: s("2"),
+            drug_unit_type: s("ME"),
+            gross_charge: s("150"),
+            discounted_cash: s("120"),
+            minimum: s("90"),
+            maximum: s("130"),
+            ..Charge::default()
+        }
+    );
+}
+
+#[test]
+fn json_3_0_0() {
+    let (records, metadata) = read("sample-3.0.0.json");
+    assert_eq!(metadata.location_name, ["North Valley Hospital", "North Valley Clinic"]);
+    assert_eq!(metadata.type_2_npi, ["1982621447", "1154343150"]);
+    assert_eq!((&metadata.license_number, &metadata.license_state), (&None, &s("NY")));
+    assert!(metadata.attestation.unwrap().starts_with("To the best of its knowledge"));
+    assert_eq!(metadata.attester_name, s("Jane Roe"));
+    assert_eq!(metadata.modifiers[0].setting, s("outpatient"));
+    assert_eq!(records.len(), 2);
+    let charge = &records[0].charge;
+    assert_eq!(charge.gross_charge, s("1.50"));
+    assert_eq!(charge.discounted_cash, s("1.2"));
+    assert_eq!(charge.modifiers, ["50", "LT"]);
+    assert_eq!(records[0].payer.as_ref().unwrap().dollar, s("1.25"));
+    assert_eq!(
+        records[1].payer,
+        Some(Payer {
+            name: s("Region Health"),
+            plan: s("Silver HMO"),
+            percentage: s("70"),
+            methodology: s("percent of total billed charges"),
+            median_amount: s("1250"),
+            percentile_10th: s("980"),
+            percentile_90th: s("1600"),
+            count: s("25"),
+            ..Payer::default()
+        })
+    );
+}
+
+#[test]
+fn json_metadata_after_items() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/metadata-after.json");
+    let mut parser = Parser::new(std::fs::File::open(path).unwrap(), Format::Json);
+    let record = parser.next().unwrap().unwrap();
+    assert_eq!((record.position, record.payer), (0, None));
+    assert_eq!(parser.metadata().hospital_name, None);
+    assert!(parser.next().is_none());
+    assert_eq!(parser.metadata().hospital_name, s("Lake Hospital"));
+    assert_eq!(parser.metadata().license_number, s("H-0042"));
+}
+
+#[test]
+fn json_errors() {
+    let position = |e: Error| match e {
+        Error::Json { line, column, .. } => (line, column),
+        e => panic!("{e}"),
+    };
+    assert_eq!(position(error("{\n\"a\": 1,\n\"b\": tru}", Format::Json)), (3, 9));
+    let truncated = "{\"hospital_name\": \"X\", \"standard_charge_information\": [";
+    assert_eq!(position(error(truncated, Format::Json)), (1, 56));
 }

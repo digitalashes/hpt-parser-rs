@@ -16,7 +16,9 @@ fn real_file() {
         .collect();
     let file = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
     let start = Instant::now();
-    let mut parser = Parser::new(file, Format::Csv);
+    let json =
+        std::path::Path::new(&path).extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
+    let mut parser = Parser::new(file, if json { Format::Json } else { Format::Csv });
     let mut count = 0;
     for record in parser.by_ref() {
         let record = record.unwrap();

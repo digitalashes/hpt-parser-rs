@@ -1,0 +1,109 @@
+{
+  "hospital_name": "West Mercy Hospital",
+  "last_updated_on": "2024-07-01",
+  "version": "2.2.0",
+  "hospital_location": [
+    "West Mercy Hospital",
+    "West Mercy Surgical Center"
+  ],
+  "hospital_address": [
+    "12 Main Street, Fullerton, CA 92832"
+  ],
+  "license_information": {
+    "license_number": "50056",
+    "state": "CA"
+  },
+  "affirmation": {
+    "affirmation": "To the best of its knowledge and belief, the hospital has included all applicable standard charge information in accordance with the requirements of 45 CFR 180.50, and the information encoded is true, accurate, and complete as of the date indicated.",
+    "confirm_affirmation": true
+  },
+  "modifier_information": [
+    {
+      "description": "Bilateral procedure",
+      "code": "50",
+      "modifier_payer_information": [
+        {
+          "payer_name": "Region Health",
+          "plan_name": "HMO",
+          "description": "150 percent of the fee schedule"
+        }
+      ]
+    }
+  ],
+  "standard_charge_information": [
+    {
+      "description": "Major hip and knee joint replacement",
+      "code_information": [
+        {
+          "code": "470",
+          "type": "MS-DRG"
+        },
+        {
+          "code": "175869",
+          "type": "LOCAL"
+        }
+      ],
+      "standard_charges": [
+        {
+          "setting": "inpatient",
+          "gross_charge": 25000,
+          "discounted_cash": 20000,
+          "minimum": 18000,
+          "maximum": 22000,
+          "payers_information": [
+            {
+              "payer_name": "Aetna",
+              "plan_name": "PPO",
+              "standard_charge_dollar": 20000,
+              "methodology": "case rate"
+            },
+            {
+              "payer_name": "Region Health",
+              "plan_name": "HMO",
+              "standard_charge_percentage": 60,
+              "estimated_amount": 23145.98,
+              "methodology": "percent of total billed charges",
+              "additional_payer_notes": "Excludes implants"
+            }
+          ]
+        },
+        {
+          "setting": "outpatient",
+          "gross_charge": 21000,
+          "discounted_cash": 17000,
+          "additional_generic_notes": "Cash price only"
+        }
+      ]
+    },
+    {
+      "description": "Infliximab 10 mg",
+      "code_information": [
+        {
+          "code": "J1745",
+          "type": "HCPCS"
+        }
+      ],
+      "drug_information": {
+        "unit": "2",
+        "type": "ME"
+      },
+      "standard_charges": [
+        {
+          "setting": "outpatient",
+          "gross_charge": 150,
+          "discounted_cash": 120,
+          "minimum": 90,
+          "maximum": 130,
+          "payers_information": [
+            {
+              "payer_name": "Aetna",
+              "plan_name": "PPO",
+              "standard_charge_dollar": 110,
+              "methodology": "fee schedule"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

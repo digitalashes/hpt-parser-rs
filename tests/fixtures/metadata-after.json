@@ -1,0 +1,37 @@
+{
+  "standard_charge_information": [
+    {
+      "description": "Office visit",
+      "code_information": [
+        {
+          "code": "99213",
+          "type": "CPT"
+        }
+      ],
+      "standard_charges": [
+        {
+          "setting": "outpatient",
+          "gross_charge": 120,
+          "discounted_cash": 100
+        }
+      ]
+    }
+  ],
+  "hospital_name": "Lake Hospital",
+  "last_updated_on": "2024-01-01",
+  "version": "2.0.0",
+  "hospital_location": [
+    "Lake Hospital"
+  ],
+  "hospital_address": [
+    "1 Lake Rd, Albany, NY 12207"
+  ],
+  "license_information": {
+    "license_number": "H-0042",
+    "state": "NY"
+  },
+  "affirmation": {
+    "affirmation": "To the best of its knowledge and belief, the hospital has included all applicable standard charge information in accordance with the requirements of 45 CFR 180.50, and the information encoded is true, accurate, and complete as of the date indicated.",
+    "confirm_affirmation": true
+  }
+}
