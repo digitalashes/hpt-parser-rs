@@ -25,7 +25,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Records a plugin function gets in one call. A batch stays in the cache: 8192 took a
-/// 2.5 GB file with plugins from 3.7 to 4.6 s and its peak memory from 56 to 150 MB.
+/// 2.5 GB file with plugins from 3.7 to 4.6 s and its peak memory from 39 to 57 MB (47 to
+/// 175 MB with every field in the plugin JSON).
 const BATCH: usize = 512;
 
 /// The footer key that holds the file's metadata.
