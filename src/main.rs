@@ -1,11 +1,11 @@
 //! `hpt-parser`: a CMS Hospital Price Transparency file to Parquet, or its metadata to
 //! standard output.
 
-use hpt_parser::config::{BUILTIN, Config};
+use hpt_parser::config::{self, BUILTIN, Config};
 use hpt_parser::parquet::{Output, parse_compression, write};
 use hpt_parser::{Format, Layout, Metadata, Parser};
-use parquet::basic::Compression;
 use serde_json::json;
+use std::error::Error;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs::File;
@@ -52,9 +52,8 @@ struct Args {
     format: Format,
     output: PathBuf,
     config: Option<PathBuf>,
-    compression: Option<Compression>,
-    chunk_size: Option<u64>,
-    row_group_size: Option<usize>,
+    /// `[output]` as the flags set it.
+    flags: config::Output,
     metadata: Option<Show>,
     notify: Option<PathBuf>,
 }
@@ -86,8 +85,7 @@ fn main() -> ExitCode {
 /// exit.
 fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
     let (mut input, mut format, mut output, mut config) = (None, None, None, None);
-    let (mut compression, mut chunk_size, mut row_group_size) = (None, None, None);
-    let (mut metadata, mut notify) = (None, None);
+    let (mut flags, mut metadata, mut notify) = (config::Output::default(), None, None);
     while let Some(arg) = args.next() {
         let text = arg.to_string_lossy().into_owned();
         if text == "-" || !text.starts_with('-') {
@@ -116,12 +114,12 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
                 });
             }
             "--compression" => {
-                let v = value()?;
-                compression =
-                    Some(parse_compression(&v.to_string_lossy()).map_err(|e| e.to_string())?);
+                let v = value()?.to_string_lossy().into_owned();
+                parse_compression(&v).map_err(|e| e.to_string())?;
+                flags.compression = Some(v);
             }
-            "--chunk-size" => chunk_size = Some(number(name, &value()?)?),
-            "--row-group-size" => row_group_size = Some(number(name, &value()?)?),
+            "--chunk-size" => flags.chunk_size = Some(number(name, &value()?)?),
+            "--row-group-size" => flags.row_group_size = Some(number(name, &value()?)?),
             "--metadata" => {
                 metadata = Some(match value()?.to_string_lossy().as_ref() {
                     "json" => Show::Json,
@@ -151,17 +149,7 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
     if output == input {
         return Err("the output would overwrite the input, give another --output".into());
     }
-    Ok(Args {
-        input,
-        format,
-        output,
-        config,
-        compression,
-        chunk_size,
-        row_group_size,
-        metadata,
-        notify,
-    })
+    Ok(Args { input, format, output, config, flags, metadata, notify })
 }
 
 fn exit(text: &str) -> ! {
@@ -174,19 +162,17 @@ fn number<T: FromStr>(name: &str, value: &OsString) -> Result<T, String> {
     value.parse().map_err(|_| format!("{name} {value}: expected a whole number, 0 or more"))
 }
 
-fn run(args: &Args) -> Result<(), String> {
+fn run(args: &Args) -> Result<(), Box<dyn Error>> {
     let config = match &args.config {
-        Some(path) => Config::load(path).map_err(|e| e.to_string())?,
+        Some(path) => Config::load(path)?,
         None => Config::builtin(),
     };
     if let Some(show) = args.metadata {
         return metadata(args, &config, show);
     }
     let mut output = Output::new(&args.output);
-    output.apply(&config.output).map_err(|e| e.to_string())?;
-    output.compression = args.compression.unwrap_or(output.compression);
-    output.chunk_size = args.chunk_size.unwrap_or(output.chunk_size);
-    output.row_group_size = args.row_group_size.unwrap_or(output.row_group_size);
+    output.apply(&config.output)?;
+    output.apply(&args.flags)?;
     let mut notify = Notify::connect(args.notify.as_deref())?;
     let result = open(args, &config).and_then(|parser| {
         let chunk_ready = |c: &hpt_parser::parquet::Chunk| {
@@ -196,9 +182,10 @@ fn run(args: &Args) -> Result<(), String> {
                 &json!({"path": path, "index": c.index, "records": c.records}),
             );
         };
-        write(parser, &config, &output, chunk_ready).map_err(|e| e.to_string())
+        Ok(write(parser, &config, &output, chunk_ready)?)
     });
-    let summary = result.inspect_err(|e| notify.send("error", &json!({"message": e})))?;
+    let summary =
+        result.inspect_err(|e| notify.send("error", &json!({"message": e.to_string()})))?;
     notify.send("done", &json!({"chunks": summary.chunks, "records": summary.records}));
     eprintln!("{} chunks, {} records", summary.chunks, summary.records);
     if summary.late_metadata {
@@ -210,7 +197,7 @@ fn run(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-fn open(args: &Args, config: &Config) -> Result<Parser<Box<dyn Read>>, String> {
+fn open(args: &Args, config: &Config) -> Result<Parser<Box<dyn Read>>, Box<dyn Error>> {
     let input: Box<dyn Read> = if args.input == "-" {
         Box::new(io::stdin().lock())
     } else {
@@ -219,13 +206,13 @@ fn open(args: &Args, config: &Config) -> Result<Parser<Box<dyn Read>>, String> {
     Ok(Parser::new(input, args.format).with_aliases(config.aliases(args.format)))
 }
 
-fn metadata(args: &Args, config: &Config, show: Show) -> Result<(), String> {
+fn metadata(args: &Args, config: &Config, show: Show) -> Result<(), Box<dyn Error>> {
     let mut parser = open(args, config)?;
     // A CSV file's metadata is complete after its header, a JSON file's may come after the
     // charge items.
     let records = if args.format == Format::Csv { 1 } else { usize::MAX };
     for record in parser.by_ref().take(records) {
-        record.map_err(|e| e.to_string())?;
+        record?;
     }
     let m = parser.metadata();
     print(&match show {
