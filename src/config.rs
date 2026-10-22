@@ -27,7 +27,7 @@ use crate::{Code, Error, Layout, Metadata, Record};
 use serde::Deserialize;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
-use std::fmt::{self, Write};
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// The built-in config: every record field as a column of its own, unchanged.
@@ -570,18 +570,10 @@ fn codes_by_type(codes: &[Code]) -> String {
         let t = c.code_type.as_deref().unwrap_or_default().to_uppercase();
         by_type.entry(t).or_default().push(&c.code);
     }
-    let mut json = String::from("{");
-    for (i, (t, codes)) in by_type.iter_mut().enumerate() {
+    for codes in by_type.values_mut() {
         codes.sort_unstable();
-        if i > 0 {
-            json.push(',');
-        }
-        push_json_str(&mut json, t);
-        json.push(':');
-        push_json_list(&mut json, codes.iter().copied());
     }
-    json.push('}');
-    json
+    to_json(&by_type)
 }
 
 /// FNV-1a, 128 bits, as 32 lower-case hex digits.
@@ -592,47 +584,21 @@ fn fnv1a_128(s: &str) -> String {
     format!("{hash:032x}")
 }
 
-fn push_json_str(out: &mut String, s: &str) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            c if u32::from(c) < 0x20 => {
-                write!(out, "\\u{:04x}", u32::from(c)).expect("a String takes any text");
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-}
-
-fn push_json_list<'a>(out: &mut String, items: impl Iterator<Item = &'a str>) {
-    out.push('[');
-    for (i, item) in items.enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        push_json_str(out, item);
-    }
-    out.push(']');
+fn to_json(value: &impl serde::Serialize) -> String {
+    serde_json::to_string(value).expect("strings, lists and maps of them always serialize")
 }
 
 /// `[{"code":"99213","type":"CPT"},...]`, as read.
 fn codes_json(codes: &[Code]) -> String {
-    let mut json = String::from("[");
-    for (i, c) in codes.iter().enumerate() {
-        json.push_str(if i > 0 { ",{\"code\":" } else { "{\"code\":" });
-        push_json_str(&mut json, &c.code);
-        json.push_str(",\"type\":");
-        match &c.code_type {
-            Some(t) => push_json_str(&mut json, t),
-            None => json.push_str("null"),
-        }
-        json.push('}');
+    #[derive(serde::Serialize)]
+    struct Item<'a> {
+        code: &'a str,
+        #[serde(rename = "type")]
+        code_type: Option<&'a str>,
     }
-    json.push(']');
-    json
+    let items: Vec<Item> =
+        codes.iter().map(|c| Item { code: &c.code, code_type: c.code_type.as_deref() }).collect();
+    to_json(&items)
 }
 
 fn cast(work: Work<'_>, kind: Type) -> Value {
@@ -641,11 +607,7 @@ fn cast(work: Work<'_>, kind: Type) -> Value {
         (Work::Codes(codes), Type::Json) => return Value::Text(codes_json(codes)),
         (Work::Codes(codes), kind) => return cast(Work::List(codes_list(codes)), kind),
         (Work::List(list), Type::List) => return Value::List(list),
-        (Work::List(list), Type::Json) => {
-            let mut json = String::new();
-            push_json_list(&mut json, list.iter().map(String::as_str));
-            return Value::Text(json);
-        }
+        (Work::List(list), Type::Json) => return Value::Text(to_json(&list)),
         (Work::List(list), Type::String) => return Value::Text(list.join("|")),
         (Work::Null | Work::List(_), _) => return Value::Null,
         (Work::Text(s), _) => s,
@@ -662,11 +624,7 @@ fn cast(work: Work<'_>, kind: Type) -> Value {
             _ => None,
         },
         Type::Date => date(t).map(Value::Date),
-        Type::Json => {
-            let mut json = String::new();
-            push_json_str(&mut json, &s);
-            Some(Value::Text(json))
-        }
+        Type::Json => Some(Value::Text(to_json(&s))),
         Type::List => Some(Value::List(split(&s, "|"))),
     };
     value.unwrap_or(Value::Null)
