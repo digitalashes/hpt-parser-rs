@@ -147,21 +147,28 @@ fn rename(names: &mut [String], aliases: &mut Aliases, used: &mut BTreeMap<Strin
     let keys: HashSet<String> = names.iter().map(|n| key(n)).collect();
     for name in names {
         let p: Vec<&str> = parts(name).collect();
-        let renamed = if let Some(alias) = aliases.get(&key(name)) {
-            alias.take(used).to_owned()
-        } else {
-            let (field, payer) = match p[..] {
-                [a, payer, plan] => (key(a), (payer, plan)),
-                [a, payer, plan, b] => (key(&format!("{a}|{b}")), (payer, plan)),
+        let whole = key(name);
+        let field = match p[..] {
+            [a, _, _] => Some(key(a)),
+            [a, _, _, b] => Some(key(&format!("{a}|{b}"))),
+            _ => None,
+        };
+        let (lookup, renamed) = if let Some(alias) = aliases.get(&whole) {
+            (whole, alias.target.clone())
+        } else if let Some(field) = field
+            && let Some(alias) = aliases.get(&field)
+        {
+            // Only a target of the alias's shape takes the payer and plan back.
+            let renamed = match (&p[..], &parts(&alias.target).collect::<Vec<_>>()[..]) {
+                ([_, payer, plan], [a]) => format!("{a} | {payer} | {plan}"),
+                ([_, payer, plan, _], [a, b]) => format!("{a} | {payer} | {plan} | {b}"),
                 _ => continue,
             };
-            let Some(alias) = aliases.get(&field) else { continue };
-            match (p.len(), &parts(alias.take(used)).collect::<Vec<_>>()[..]) {
-                (3, [a]) => format!("{a} | {} | {}", payer.0, payer.1),
-                (4, [a, b]) => format!("{a} | {} | {} | {b}", payer.0, payer.1),
-                _ => continue,
-            }
+            (field, renamed)
+        } else {
+            continue;
         };
+        aliases.get(&lookup).expect("found above").take(used);
         if !keys.contains(&key(&renamed)) {
             *name = renamed;
         }

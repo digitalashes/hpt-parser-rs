@@ -432,3 +432,16 @@ fn alias_gives_way() {
     let modifiers: Vec<_> = parser.map(|r| r.unwrap().charge.modifiers.clone()).collect();
     assert_eq!(modifiers, [list(&["B"]), list(&["B"]), list(&["A"])]);
 }
+
+/// An alias whose target has another shape than the payer-specific column is not used.
+#[test]
+fn alias_of_other_shape() {
+    let aliases = [("median".to_owned(), "standard_charge | gross".to_owned())];
+    let file = "version\n3.0.0\n\
+        description,median | Acme | PPO,standard_charge | Acme | PPO | negotiated_dollar\nX,5,1\n";
+    let mut parser = Parser::new(file.as_bytes(), Format::Csv).with_aliases(aliases);
+    let record = parser.next().unwrap().unwrap();
+    assert_eq!(record.charge.gross_charge, None);
+    assert_eq!(record.payer.unwrap().median_amount, None);
+    assert!(parser.metadata().aliases_used.is_empty());
+}
