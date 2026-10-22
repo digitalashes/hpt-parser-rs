@@ -1,0 +1,45 @@
+# The rates plugin: CPT items only, each negotiated dollar amount as a percentage of the
+# gross charge, and the filter's counts in the footer. From the repository's root, after
+# the build:
+#   cargo run -- tests/fixtures/tall-3.0.0.csv -c examples/rates/columns.toml -o rates.parquet
+
+[[plugin]]
+name = "rates"
+path = "target/wasm32-unknown-unknown/release/rates.wasm"
+config = { types = "CPT" }
+
+[[filter]]
+plugin = "rates.coded"
+fields = ["charge.codes"]
+
+[[metadata]]
+plugin = "rates.counts"
+
+[[column]]
+name = "description"
+from = "charge.description"
+type = "string"
+
+[[column]]
+name = "codes"
+from = "charge.codes"
+type = "json"
+transform = ["codes_by_type"]
+
+[[column]]
+name = "payer"
+from = "payer.name"
+type = "string"
+
+[[column]]
+name = "dollar"
+from = "payer.dollar"
+type = "f64"
+transform = ["money"]
+
+[[column]]
+name = "percent_of_gross"
+plugin = "rates.share"
+fields = ["payer.dollar", "charge.gross_charge"]
+type = "f64"
+transform = [{ round = 1 }]

@@ -24,6 +24,8 @@ hpt-parser --print-config > columns.toml              # the built-in config, to 
 - `--notify-socket <path>`: one JSON line per event on a unix socket someone listens on:
   `chunk_ready` (`path`, `index`, `records`), then `done` (`chunks`, `records`) or
   `error` (`message`). A `chunk_ready` file is complete and can be loaded at once.
+  Listeners in Rust and Python: the repository's
+  [`examples/`](https://github.com/digitalashes/hpt-parser-rs/tree/main/examples).
 - The file's metadata is JSON in each Parquet footer under the key `hpt.metadata`.
 
 ## Library

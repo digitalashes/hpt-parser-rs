@@ -1,0 +1,36 @@
+# The payer-names plugin on a wide file, whose payer is "Acme" where the tall one has
+# "Acme Health". From the repository's root, after the build:
+#   cargo run -- tests/fixtures/wide-3.0.0.csv -c examples/payer-names/columns.toml -o names.parquet
+
+[[plugin]]
+name = "payers"
+path = "target/wasm32-unknown-unknown/release/payer_names.wasm"
+
+[plugin.config]
+names = """
+acme = Acme Health
+acme health inc = Acme Health
+region = Region Health
+"""
+
+[[column]]
+name = "description"
+from = "charge.description"
+type = "string"
+
+[[column]]
+name = "payer"
+from = "payer.name"
+type = "string"
+transform = ["trim", { plugin = "payers.canonical" }]
+
+[[column]]
+name = "plan"
+from = "payer.plan"
+type = "string"
+
+[[column]]
+name = "dollar"
+from = "payer.dollar"
+type = "f64"
+transform = ["money"]

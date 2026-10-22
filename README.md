@@ -109,7 +109,8 @@ listens on and writes one JSON line per event:
 A parse that fails sends `{"event":"error","message":"..."}` instead of `done`. A
 `chunk_ready` file is closed and complete, so a consumer can load it while the rest is
 still being parsed. No listener at the start is an error (exit 1); a write that fails
-later prints one warning and the run goes on.
+later prints one warning and the run goes on. [`examples/`](examples) has a listener in
+Rust and in Python.
 
 ## Output config
 
@@ -302,7 +303,8 @@ rustup target add wasm32-unknown-unknown
 cargo build --release --target wasm32-unknown-unknown   # target/wasm32-unknown-unknown/release/<name>.wasm
 ```
 
-[`tests/plugin/src/lib.rs`](tests/plugin/src/lib.rs) has a function for each hook.
+[`examples/`](examples) has two plugins with their configs, and
+[`tests/plugin/src/lib.rs`](tests/plugin/src/lib.rs) a function for each hook.
 
 ### What is in a Parquet file
 

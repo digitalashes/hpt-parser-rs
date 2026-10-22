@@ -362,3 +362,7 @@ cargo test                     # the plain functions, on the host
   repository's `tests/fixtures/tall-3.0.0.csv` for example.
 - Add `RUSTFLAGS="--remap-path-prefix=$HOME=~"` to the build to keep local paths out of
   the panic messages in the `.wasm`.
+- Two more plugins with their configs are in the repository's
+  [`examples/`](https://github.com/digitalashes/hpt-parser-rs/tree/main/examples):
+  `payer-names` (a lookup table from config, built once in a `OnceLock`) and `rates` (a
+  filter, a computed column, a metadata hook reporting counts kept in statics).
