@@ -165,8 +165,9 @@ pub enum Transform {
     Money,
     /// A number to this many digits after the point.
     Round(usize),
-    /// Exact match after trimming, then case-insensitive.
-    Map(Vec<(String, String)>),
+    /// Exact match after trimming, then case-insensitive: the key, the key lower-cased and
+    /// the value.
+    Map(Vec<(String, String, String)>),
     /// A domain's values, the `fuzzy` similarity.
     Match(&'static [&'static str], Option<f64>),
     /// Text to a list, on this separator.
@@ -457,7 +458,7 @@ fn transform(t: &toml::Value, plugins: &[Plugin]) -> Result<Transform, String> {
         ("map", toml::Value::Table(map)) => {
             let pairs = map.iter().map(|(from, to)| {
                 text(to)
-                    .map(|to| (from.clone(), to))
+                    .map(|to| (from.clone(), from.to_lowercase(), to))
                     .ok_or(format!("`map` value of `{from}` is not text"))
             });
             Transform::Map(pairs.collect::<Result<_, _>>()?)
@@ -864,10 +865,12 @@ fn apply<'a>(t: &Transform, work: Work<'a>) -> Work<'a> {
         }),
         Transform::Map(pairs) => each(work, &|s| {
             let key = trim(&s);
-            let lower = key.to_lowercase();
-            (pairs.iter().find(|(from, _)| from == key))
-                .or_else(|| pairs.iter().find(|(from, _)| from.to_lowercase() == lower))
-                .map_or(s, |(_, to)| to.clone())
+            (pairs.iter().find(|(from, ..)| from == key))
+                .or_else(|| {
+                    let key = key.to_lowercase();
+                    pairs.iter().find(|(_, lower, _)| *lower == key)
+                })
+                .map_or(s, |(.., to)| to.clone())
         }),
         Transform::Match(values, fuzzy) => {
             each(work, &|s| matched(values, &s, *fuzzy).map_or(s, String::from))
