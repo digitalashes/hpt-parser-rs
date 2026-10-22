@@ -22,6 +22,7 @@
 //! `setting`, `methodology`, `code_type`, `drug_unit` or `billing_class`), `{ split = "|" }`,
 //! `{ default = "x" }`, `codes_by_type`, `codes_list`, `hash`, `{ plugin = "name.fn" }`.
 
+use crate::text::{is_space, split, trim};
 use crate::{Code, Error, Layout, Metadata, Record};
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -77,7 +78,7 @@ pub struct Column {
     pub transforms: Vec<Transform>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Source {
     Fields(Vec<Field>),
     /// A plugin function computes the value.
@@ -98,7 +99,7 @@ pub enum Type {
     List,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum Transform {
     Trim,
     Upper,
@@ -107,7 +108,8 @@ pub enum Transform {
     Round(usize),
     /// Exact match after trimming, then case-insensitive.
     Map(Vec<(String, String)>),
-    Match(Domain, Option<f64>),
+    /// A domain's values, the `fuzzy` similarity.
+    Match(&'static [&'static str], Option<f64>),
     Split(String),
     /// For a null or empty value.
     Default(String),
@@ -117,48 +119,24 @@ pub enum Transform {
     Plugin(String),
 }
 
-/// A CMS value domain for `match`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Domain {
-    Setting,
-    Methodology,
-    CodeType,
-    DrugUnit,
-    BillingClass,
-}
-
-impl Domain {
-    fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "setting" => Domain::Setting,
-            "methodology" => Domain::Methodology,
-            "code_type" => Domain::CodeType,
-            "drug_unit" => Domain::DrugUnit,
-            "billing_class" => Domain::BillingClass,
-            _ => return None,
-        })
-    }
-
-    fn values(self) -> &'static [&'static str] {
-        match self {
-            Domain::Setting => &["inpatient", "outpatient", "both"],
-            Domain::Methodology => &[
-                "case rate",
-                "fee schedule",
-                "percent of total billed charges",
-                "per diem",
-                "other",
-            ],
-            Domain::CodeType => &[
-                "CPT", "HCPCS", "ICD", "DRG", "MS-DRG", "R-DRG", "S-DRG", "APS-DRG", "AP-DRG",
-                "APR-DRG", "TRIS-DRG", "APC", "NDC", "HIPPS", "LOCAL", "EAPG", "CDT", "RC", "CDM",
-                "CMG", "MS-LTC-DRG",
-            ],
-            Domain::DrugUnit => &["GR", "ME", "ML", "UN", "F2", "EA", "GM"],
-            Domain::BillingClass => &["professional", "facility", "both"],
-        }
-    }
-}
+/// The CMS value domains for `match`.
+const DOMAINS: &[(&str, &[&str])] = &[
+    ("setting", &["inpatient", "outpatient", "both"]),
+    (
+        "methodology",
+        &["case rate", "fee schedule", "percent of total billed charges", "per diem", "other"],
+    ),
+    (
+        "code_type",
+        &[
+            "CPT", "HCPCS", "ICD", "DRG", "MS-DRG", "R-DRG", "S-DRG", "APS-DRG", "AP-DRG",
+            "APR-DRG", "TRIS-DRG", "APC", "NDC", "HIPPS", "LOCAL", "EAPG", "CDT", "RC", "CDM",
+            "CMG", "MS-LTC-DRG",
+        ],
+    ),
+    ("drug_unit", &["GR", "ME", "ML", "UN", "F2", "EA", "GM"]),
+    ("billing_class", &["professional", "facility", "both"]),
+];
 
 /// A column's value, handed to the writer.
 #[derive(Clone, Debug, PartialEq)]
@@ -191,7 +169,7 @@ struct Raw {
 #[serde(deny_unknown_fields)]
 struct RawColumn {
     name: String,
-    from: Option<From>,
+    from: Option<Names>,
     plugin: Option<String>,
     r#type: Type,
     #[serde(default)]
@@ -200,7 +178,7 @@ struct RawColumn {
 
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum From {
+enum Names {
     One(String),
     Many(Vec<String>),
 }
@@ -212,10 +190,7 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self, Error> {
         let error = |message| Error::Config { message: format!("{}: {message}", path.display()) };
         let text = std::fs::read_to_string(path).map_err(|e| error(e.to_string()))?;
-        Self::parse(&text).map_err(|e| match e {
-            Error::Config { message } => error(message),
-            e => e,
-        })
+        Self::parse(&text).map_err(|e| error(e.to_string()))
     }
 
     /// # Errors
@@ -228,11 +203,12 @@ impl Config {
         let mut names = HashSet::new();
         let mut columns = Vec::new();
         for c in raw.column {
+            let name = c.name.clone();
             if !names.insert(c.name.clone()) {
-                return Err(error(format!("column `{}` is defined twice", c.name)));
+                return Err(error(format!("column `{name}` is defined twice")));
             }
             let column = column(c, &raw.plugin);
-            columns.push(column.map_err(|(name, e)| error(format!("column `{name}`: {e}")))?);
+            columns.push(column.map_err(|e| error(format!("column `{name}`: {e}")))?);
         }
         for f in &raw.filter {
             plugin_function(&f.plugin, &raw.plugin).map_err(|e| error(format!("filter: {e}")))?;
@@ -249,32 +225,27 @@ impl Config {
     }
 }
 
-fn column(c: RawColumn, plugins: &[Plugin]) -> Result<Column, (String, String)> {
-    let checked = || {
-        let source = match (c.from, &c.plugin) {
-            (Some(from), None) => {
-                let names = match from {
-                    From::One(name) => vec![name],
-                    From::Many(names) => names,
-                };
-                if names.is_empty() {
-                    return Err("`from` names no field".into());
-                }
-                let fields = names.iter().map(|name| {
-                    Field::parse(name).ok_or_else(|| format!("unknown field `{name}`"))
-                });
-                Source::Fields(fields.collect::<Result<_, _>>()?)
+fn column(c: RawColumn, plugins: &[Plugin]) -> Result<Column, String> {
+    let source = match (c.from, &c.plugin) {
+        (Some(from), None) => {
+            let names = match from {
+                Names::One(name) => vec![name],
+                Names::Many(names) => names,
+            };
+            if names.is_empty() {
+                return Err("`from` names no field".into());
             }
-            (None, Some(plugin)) => Source::Plugin(plugin_function(plugin, plugins)?),
-            _ => return Err("needs one of `from` and `plugin`".into()),
-        };
-        let transforms = c.transform.iter().map(|t| transform(t, plugins));
-        Ok((source, transforms.collect::<Result<_, String>>()?))
+            let fields = names
+                .iter()
+                .map(|name| Field::parse(name).ok_or_else(|| format!("unknown field `{name}`")));
+            Source::Fields(fields.collect::<Result<_, _>>()?)
+        }
+        (None, Some(plugin)) => Source::Plugin(plugin_function(plugin, plugins)?),
+        _ => return Err("needs one of `from` and `plugin`".into()),
     };
-    match checked() {
-        Ok((source, transforms)) => Ok(Column { name: c.name, source, kind: c.r#type, transforms }),
-        Err(e) => Err((c.name, e)),
-    }
+    let transforms = c.transform.iter().map(|t| transform(t, plugins));
+    let transforms = transforms.collect::<Result<_, _>>()?;
+    Ok(Column { name: c.name, source, kind: c.r#type, transforms })
 }
 
 /// `<plugin>.<function>`, the plugin declared.
@@ -328,7 +299,9 @@ fn transform(t: &toml::Value, plugins: &[Plugin]) -> Result<Transform, String> {
             Transform::Map(pairs.collect::<Result<_, _>>()?)
         }
         ("match", toml::Value::String(domain)) => {
-            let domain = Domain::parse(domain).ok_or(format!("unknown domain `{domain}`"))?;
+            let values = (DOMAINS.iter().find(|(name, _)| name == domain))
+                .ok_or(format!("unknown domain `{domain}`"))?
+                .1;
             let fuzzy = match table.get("fuzzy") {
                 None => None,
                 Some(f) => Some(
@@ -340,7 +313,7 @@ fn transform(t: &toml::Value, plugins: &[Plugin]) -> Result<Transform, String> {
                         .ok_or("`fuzzy` is a similarity from 0 to 1")?,
                 ),
             };
-            Transform::Match(domain, fuzzy)
+            Transform::Match(values, fuzzy)
         }
         ("split", toml::Value::String(s)) => Transform::Split(s.clone()),
         ("default", toml::Value::String(s)) => Transform::Default(s.clone()),
@@ -350,10 +323,10 @@ fn transform(t: &toml::Value, plugins: &[Plugin]) -> Result<Transform, String> {
 }
 
 /// A field a column reads.
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub struct Field(Name);
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 enum Name {
     /// An index into `FIELDS`.
     Known(usize),
@@ -361,28 +334,21 @@ enum Name {
     Extra(String),
 }
 
-/// A field's value, borrowed from the record.
-pub enum Cell<'a> {
-    Text(Option<Cow<'a, str>>),
-    List(&'a [String]),
-    Codes(&'a [Code]),
-}
+type Get = for<'a> fn(&'a Record, &'a Metadata) -> Work<'a>;
 
-type Get = for<'a> fn(&'a Record, &'a Metadata) -> Cell<'a>;
-
-fn text(v: Option<&str>) -> Cell<'_> {
-    Cell::Text(v.map(Cow::Borrowed))
+fn text(v: Option<&str>) -> Work<'_> {
+    v.map_or(Work::Null, |v| Work::Text(Cow::Borrowed(v)))
 }
 
 /// Every field but `metadata.extra.<key>`, in the order of the built-in config.
 const FIELDS: &[(&str, Get)] = &[
     ("charge.description", |r, _| text(r.charge.description.as_deref())),
-    ("charge.codes", |r, _| Cell::Codes(&r.charge.codes)),
+    ("charge.codes", |r, _| Work::Codes(&r.charge.codes)),
     ("charge.setting", |r, _| text(r.charge.setting.as_deref())),
     ("charge.billing_class", |r, _| text(r.charge.billing_class.as_deref())),
     ("charge.drug_unit", |r, _| text(r.charge.drug_unit.as_deref())),
     ("charge.drug_unit_type", |r, _| text(r.charge.drug_unit_type.as_deref())),
-    ("charge.modifiers", |r, _| Cell::List(&r.charge.modifiers)),
+    ("charge.modifiers", |r, _| Work::List(r.charge.modifiers.clone())),
     ("charge.gross_charge", |r, _| text(r.charge.gross_charge.as_deref())),
     ("charge.discounted_cash", |r, _| text(r.charge.discounted_cash.as_deref())),
     ("charge.minimum", |r, _| text(r.charge.minimum.as_deref())),
@@ -400,16 +366,16 @@ const FIELDS: &[(&str, Get)] = &[
     ("payer.percentile_90th", |r, _| text(payer(r, |p| p.percentile_90th.as_deref()))),
     ("payer.count", |r, _| text(payer(r, |p| p.count.as_deref()))),
     ("payer.notes", |r, _| text(payer(r, |p| p.notes.as_deref()))),
-    ("record.position", |r, _| Cell::Text(Some(Cow::Owned(r.position.to_string())))),
+    ("record.position", |r, _| Work::Text(Cow::Owned(r.position.to_string()))),
     ("metadata.layout", |_, m| text(m.layout.map(Layout::name))),
     ("metadata.version", |_, m| text(m.version.as_deref())),
     ("metadata.hospital_name", |_, m| text(m.hospital_name.as_deref())),
     ("metadata.last_updated_on", |_, m| text(m.last_updated_on.as_deref())),
-    ("metadata.location_name", |_, m| Cell::List(&m.location_name)),
-    ("metadata.hospital_address", |_, m| Cell::List(&m.hospital_address)),
+    ("metadata.location_name", |_, m| Work::List(m.location_name.clone())),
+    ("metadata.hospital_address", |_, m| Work::List(m.hospital_address.clone())),
     ("metadata.license_number", |_, m| text(m.license_number.as_deref())),
     ("metadata.license_state", |_, m| text(m.license_state.as_deref())),
-    ("metadata.type_2_npi", |_, m| Cell::List(&m.type_2_npi)),
+    ("metadata.type_2_npi", |_, m| Work::List(m.type_2_npi.clone())),
     ("metadata.attestation", |_, m| text(m.attestation.as_deref())),
     ("metadata.attestation_confirmed", |_, m| text(m.attestation_confirmed.as_deref())),
     ("metadata.attester_name", |_, m| text(m.attester_name.as_deref())),
@@ -420,7 +386,7 @@ fn payer(r: &Record, get: fn(&crate::Payer) -> Option<&str>) -> Option<&str> {
 }
 
 impl Field {
-    pub fn parse(name: &str) -> Option<Self> {
+    fn parse(name: &str) -> Option<Self> {
         if let Some(key) = name.strip_prefix("metadata.extra.") {
             return Some(Field(Name::Extra(key.into())));
         }
@@ -432,11 +398,10 @@ impl Field {
         FIELDS.iter().map(|(name, _)| *name)
     }
 
-    #[must_use]
-    pub fn get<'a>(&self, record: &'a Record, metadata: &'a Metadata) -> Cell<'a> {
+    fn get<'a>(&self, record: &'a Record, metadata: &'a Metadata) -> Work<'a> {
         match &self.0 {
             Name::Known(i) => (FIELDS[*i].1)(record, metadata),
-            Name::Extra(key) => Cell::Text(metadata.extra.get(key).map(|v| Cow::Borrowed(&**v))),
+            Name::Extra(key) => text(metadata.extra.get(key).map(String::as_str)),
         }
     }
 }
@@ -453,7 +418,7 @@ impl fmt::Debug for Field {
 /// A value between transforms.
 enum Work<'a> {
     Null,
-    Text(String),
+    Text(Cow<'a, str>),
     List(Vec<String>),
     Codes(&'a [Code]),
     /// JSON text, from `codes_by_type`.
@@ -468,24 +433,14 @@ impl Column {
             return Value::Null;
         };
         let mut work = match &fields[..] {
-            [field] => match field.get(record, metadata) {
-                Cell::Text(t) => t.map_or(Work::Null, |t| Work::Text(t.into_owned())),
-                Cell::List(list) => Work::List(list.to_vec()),
-                Cell::Codes(codes) => Work::Codes(codes),
-            },
+            [field] => field.get(record, metadata),
             fields => {
-                let cells: Vec<Option<String>> =
-                    fields.iter().map(|f| joined(f.get(record, metadata))).collect();
+                let cells: Vec<_> = fields.iter().map(|f| flat(f.get(record, metadata))).collect();
                 if cells.iter().all(Option::is_none) {
                     Work::Null
                 } else {
-                    Work::Text(
-                        cells
-                            .into_iter()
-                            .map(Option::unwrap_or_default)
-                            .collect::<Vec<_>>()
-                            .join("|"),
-                    )
+                    let cells: Vec<_> = cells.iter().map(|c| c.as_deref().unwrap_or("")).collect();
+                    Work::Text(Cow::Owned(cells.join("|")))
                 }
             }
         };
@@ -496,49 +451,52 @@ impl Column {
     }
 }
 
-/// A cell as one text: lists joined by `|`, codes as `codes_list` gives them.
-fn joined(cell: Cell<'_>) -> Option<String> {
-    match cell {
-        Cell::Text(t) => t.map(Cow::into_owned),
-        Cell::List(list) => Some(list.join("|")),
-        Cell::Codes(codes) => Some(codes_list(codes).join("|")),
+/// A value as one text: lists joined by `|`, codes as `codes_list` gives them.
+fn flat(work: Work<'_>) -> Option<Cow<'_, str>> {
+    match work {
+        Work::Null => None,
+        Work::Text(s) => Some(s),
+        Work::Json(s) => Some(Cow::Owned(s)),
+        Work::List(list) => Some(Cow::Owned(list.join("|"))),
+        Work::Codes(codes) => Some(Cow::Owned(codes_list(codes).join("|"))),
     }
 }
 
 fn apply<'a>(t: &Transform, work: Work<'a>) -> Work<'a> {
     let each = |work: Work<'a>, f: &dyn Fn(String) -> String| match work {
-        Work::Text(s) => Work::Text(f(s)),
+        Work::Text(s) => Work::Text(Cow::Owned(f(s.into_owned()))),
         Work::List(list) => Work::List(list.into_iter().map(f).collect()),
         work => work,
     };
     match t {
-        Transform::Trim => each(work, &|s| s.trim().into()),
+        Transform::Trim => each(work, &|s| trim(&s).into()),
         Transform::Upper => each(work, &|s| s.to_uppercase()),
         Transform::Lower => each(work, &|s| s.to_lowercase()),
-        Transform::Money => each(work, &|s| {
-            s.chars().filter(|&c| c != '$' && c != ',' && !c.is_whitespace()).collect()
+        Transform::Money => each(work, &|mut s| {
+            s.retain(|c| c != '$' && c != ',' && !is_space(c));
+            s
         }),
-        &Transform::Round(digits) => each(work, &|s| match s.trim().parse::<f64>() {
+        &Transform::Round(digits) => each(work, &|s| match trim(&s).parse::<f64>() {
             Ok(n) if n.is_finite() => format!("{n:.digits$}"),
             _ => s,
         }),
         Transform::Map(pairs) => each(work, &|s| {
-            let key = s.trim();
+            let key = trim(&s);
             let lower = key.to_lowercase();
             (pairs.iter().find(|(from, _)| from == key))
                 .or_else(|| pairs.iter().find(|(from, _)| from.to_lowercase() == lower))
                 .map_or(s, |(_, to)| to.clone())
         }),
-        Transform::Match(domain, fuzzy) => {
-            each(work, &|s| matched(domain.values(), &s, *fuzzy).map_or(s, String::from))
+        Transform::Match(values, fuzzy) => {
+            each(work, &|s| matched(values, &s, *fuzzy).map_or(s, String::from))
         }
         Transform::Split(sep) => match work {
             Work::Text(s) => Work::List(split(&s, sep)),
             work => work,
         },
         Transform::Default(default) => match work {
-            Work::Null => Work::Text(default.clone()),
-            Work::Text(s) if s.is_empty() => Work::Text(default.clone()),
+            Work::Null => Work::Text(Cow::Owned(default.clone())),
+            Work::Text(s) if s.is_empty() => Work::Text(Cow::Owned(default.clone())),
             work => work,
         },
         Transform::CodesByType => match work {
@@ -549,25 +507,17 @@ fn apply<'a>(t: &Transform, work: Work<'a>) -> Work<'a> {
             Work::Codes(codes) => Work::List(codes_list(codes)),
             work => work,
         },
-        Transform::Hash => match work {
-            Work::Null => Work::Null,
-            Work::Text(s) | Work::Json(s) => Work::Text(fnv1a_128(&s)),
-            Work::List(list) => Work::Text(fnv1a_128(&list.join("|"))),
-            Work::Codes(codes) => Work::Text(fnv1a_128(&codes_list(codes).join("|"))),
-        },
+        Transform::Hash => flat(work).map_or(Work::Null, |s| Work::Text(Cow::Owned(fnv1a_128(&s)))),
         Transform::Plugin(_) => work,
     }
-}
-
-fn split(s: &str, sep: &str) -> Vec<String> {
-    s.split(sep).map(str::trim).filter(|p| !p.is_empty()).map(String::from).collect()
 }
 
 /// The domain value equal to `s` ignoring case, or with `fuzzy` the most similar one at
 /// least that similar.
 fn matched(values: &'static [&'static str], s: &str, fuzzy: Option<f64>) -> Option<&'static str> {
-    let s = s.trim().to_lowercase();
-    if let Some(v) = values.iter().find(|v| v.to_lowercase() == s) {
+    let s = trim(s).to_lowercase();
+    // The domain values are ASCII.
+    if let Some(v) = values.iter().find(|v| v.eq_ignore_ascii_case(&s)) {
         return Some(v);
     }
     let threshold = fuzzy?;
@@ -668,49 +618,42 @@ fn push_json_list<'a>(out: &mut String, items: impl Iterator<Item = &'a str>) {
     out.push(']');
 }
 
+/// `[{"code":"99213","type":"CPT"},...]`, as read.
+fn codes_json(codes: &[Code]) -> String {
+    let mut json = String::from("[");
+    for (i, c) in codes.iter().enumerate() {
+        json.push_str(if i > 0 { ",{\"code\":" } else { "{\"code\":" });
+        push_json_str(&mut json, &c.code);
+        json.push_str(",\"type\":");
+        match &c.code_type {
+            Some(t) => push_json_str(&mut json, t),
+            None => json.push_str("null"),
+        }
+        json.push('}');
+    }
+    json.push(']');
+    json
+}
+
 fn cast(work: Work<'_>, kind: Type) -> Value {
-    let text = match work {
-        Work::Null => return Value::Null,
-        Work::Json(s) if kind == Type::Json => return Value::Text(s),
-        Work::Text(s) | Work::Json(s) => s,
-        Work::List(list) => {
-            return match kind {
-                Type::List => Value::List(list),
-                Type::Json => {
-                    let mut json = String::new();
-                    push_json_list(&mut json, list.iter().map(String::as_str));
-                    Value::Text(json)
-                }
-                Type::String => Value::Text(list.join("|")),
-                _ => Value::Null,
-            };
+    let s = match (work, kind) {
+        (Work::Json(s), Type::Json) => return Value::Text(s),
+        (Work::Codes(codes), Type::Json) => return Value::Text(codes_json(codes)),
+        (Work::Codes(codes), kind) => return cast(Work::List(codes_list(codes)), kind),
+        (Work::List(list), Type::List) => return Value::List(list),
+        (Work::List(list), Type::Json) => {
+            let mut json = String::new();
+            push_json_list(&mut json, list.iter().map(String::as_str));
+            return Value::Text(json);
         }
-        Work::Codes(codes) => {
-            return match kind {
-                Type::Json => {
-                    let mut json = String::from("[");
-                    for (i, c) in codes.iter().enumerate() {
-                        json.push_str(if i > 0 { ",{\"code\":" } else { "{\"code\":" });
-                        push_json_str(&mut json, &c.code);
-                        json.push_str(",\"type\":");
-                        match &c.code_type {
-                            Some(t) => push_json_str(&mut json, t),
-                            None => json.push_str("null"),
-                        }
-                        json.push('}');
-                    }
-                    json.push(']');
-                    Value::Text(json)
-                }
-                Type::List => Value::List(codes_list(codes)),
-                Type::String => Value::Text(codes_list(codes).join("|")),
-                _ => Value::Null,
-            };
-        }
+        (Work::List(list), Type::String) => return Value::Text(list.join("|")),
+        (Work::Null | Work::List(_), _) => return Value::Null,
+        (Work::Text(s), _) => s,
+        (Work::Json(s), _) => Cow::Owned(s),
     };
-    let t = text.trim();
+    let t = trim(&s);
     let value = match kind {
-        Type::String => Some(Value::Text(text.clone())),
+        Type::String => Some(Value::Text(s.into_owned())),
         Type::F64 => t.parse::<f64>().ok().filter(|n| n.is_finite()).map(Value::F64),
         Type::I64 => t.parse().ok().map(Value::I64),
         Type::Bool => match t.to_lowercase().as_str() {
@@ -721,10 +664,10 @@ fn cast(work: Work<'_>, kind: Type) -> Value {
         Type::Date => date(t).map(Value::Date),
         Type::Json => {
             let mut json = String::new();
-            push_json_str(&mut json, &text);
+            push_json_str(&mut json, &s);
             Some(Value::Text(json))
         }
-        Type::List => Some(Value::List(split(&text, "|"))),
+        Type::List => Some(Value::List(split(&s, "|"))),
     };
     value.unwrap_or(Value::Null)
 }

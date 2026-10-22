@@ -141,9 +141,9 @@ fn header_field(m: &mut Metadata, name: &str, value: &str) {
         "HOSPITAL_NAME" => m.hospital_name = text,
         "LAST_UPDATED_ON" => m.last_updated_on = text,
         "VERSION" => m.version = text,
-        "HOSPITAL_ADDRESS" => m.hospital_address = split_list(value),
-        "LOCATION_NAME" | "HOSPITAL_LOCATION" => m.location_name.extend(split_list(value)),
-        "TYPE_2_NPI" => m.type_2_npi = split_list(value),
+        "HOSPITAL_ADDRESS" => m.hospital_address = text::split(value, "|"),
+        "LOCATION_NAME" | "HOSPITAL_LOCATION" => m.location_name.extend(text::split(value, "|")),
+        "TYPE_2_NPI" => m.type_2_npi = text::split(value, "|"),
         "ATTESTER_NAME" => m.attester_name = text,
         _ if key.starts_with("LICENSE_NUMBER|") => {
             m.license_number = text;
@@ -249,7 +249,7 @@ impl Columns {
                 Slot::BillingClass => charge.billing_class = v,
                 Slot::DrugUnit => charge.drug_unit = v,
                 Slot::DrugUnitType => charge.drug_unit_type = v,
-                Slot::Modifiers => charge.modifiers = split_list(cell),
+                Slot::Modifiers => charge.modifiers = text::split(cell, "|"),
                 Slot::Gross => charge.gross_charge = v,
                 Slot::DiscountedCash => charge.discounted_cash = v,
                 Slot::Minimum => charge.minimum = v,
@@ -350,9 +350,4 @@ fn key(name: &str) -> String {
 /// `None` for an empty text.
 fn non_empty(s: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_owned())
-}
-
-/// A cell holding several values separated by `|`, trimmed, empty ones dropped.
-fn split_list(value: &str) -> Vec<String> {
-    parts(value).filter(|p| !p.is_empty()).map(str::to_owned).collect()
 }

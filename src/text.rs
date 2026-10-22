@@ -20,6 +20,11 @@ pub fn trim(s: &str) -> &str {
     s.trim_matches(is_space)
 }
 
+/// The parts of `s` between `sep`, trimmed, the empty ones dropped.
+pub fn split(s: &str, sep: &str) -> Vec<String> {
+    s.split(sep).map(trim).filter(|p| !p.is_empty()).map(String::from).collect()
+}
+
 /// Applied to the first chunk: a leading BOM goes with all the whitespace after it.
 pub fn remove_bom(chunk: &str) -> &str {
     if chunk.starts_with('\u{feff}') { chunk.trim_start_matches(is_space) } else { chunk }
