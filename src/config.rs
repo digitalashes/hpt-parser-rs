@@ -244,11 +244,8 @@ impl Config {
 
     /// The aliases for a file of `format`, as [`crate::Parser::with_aliases`] takes them.
     pub fn aliases(&self, format: Format) -> impl Iterator<Item = (String, String)> + '_ {
-        let table = match format {
-            Format::Csv => &self.aliases.csv,
-            Format::Json => &self.aliases.json,
-        };
-        (table.iter()).flat_map(|(target, names)| names.iter().map(|n| (n.clone(), target.clone())))
+        (self.aliases.table(format).iter())
+            .flat_map(|(target, names)| names.iter().map(|n| (n.clone(), target.clone())))
     }
 
     /// # Panics
@@ -260,16 +257,28 @@ impl Config {
     }
 }
 
+impl Aliases {
+    fn table(&self, format: Format) -> &BTreeMap<String, Vec<String>> {
+        match format {
+            Format::Csv => &self.csv,
+            Format::Json => &self.json,
+        }
+    }
+}
+
 fn check_aliases(aliases: &Aliases) -> Result<(), String> {
-    for (format, table) in [(Format::Csv, &aliases.csv), (Format::Json, &aliases.json)] {
-        let section = if format == Format::Csv { "aliases.csv" } else { "aliases.json" };
+    for (format, section) in [(Format::Csv, "aliases.csv"), (Format::Json, "aliases.json")] {
         let mut targets = HashMap::new();
-        for (target, names) in table {
-            if !crate::known(format, target) {
+        for (target, names) in aliases.table(format) {
+            let known = match format {
+                Format::Csv => crate::csv::known(target),
+                Format::Json => crate::json::NAMES.contains(&target.as_str()),
+            };
+            if !known {
                 return Err(format!("{section}: `{target}` is not a name the parser reads"));
             }
             for name in names {
-                let key = if format == Format::Csv { crate::csv::key(name) } else { name.clone() };
+                let key = crate::alias_key(format, name);
                 if let Some(other) = targets.insert(key, target).filter(|t| *t != target) {
                     return Err(format!(
                         "{section}: `{name}` is an alias of `{other}` and `{target}`"

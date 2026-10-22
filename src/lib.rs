@@ -314,12 +314,14 @@ impl<R: Read> Parser<R> {
     /// name and an alias of it, the name is read. Call it before the first record.
     #[must_use]
     pub fn with_aliases(mut self, aliases: impl IntoIterator<Item = (String, String)>) -> Self {
-        let key = |name: &str| match self.inner {
-            Inner::Csv(_) => csv::key(name),
-            Inner::Json(_) => name.to_owned(),
-        };
+        let format = if matches!(self.inner, Inner::Csv(_)) { Format::Csv } else { Format::Json };
         let aliases = (aliases.into_iter())
-            .map(|(name, target)| Alias { key: key(&name), name, target, used: false })
+            .map(|(name, target)| Alias {
+                key: alias_key(format, &name),
+                name,
+                target,
+                used: false,
+            })
             .collect();
         match &mut self.inner {
             Inner::Csv(p) => p.aliases = Aliases(aliases),
@@ -398,12 +400,12 @@ impl Alias {
     }
 }
 
-/// Whether `name` is a name the parser reads in `format`, as an alias target must be.
-#[cfg(feature = "config")]
-fn known(format: Format, name: &str) -> bool {
+/// A name as `format` compares names: CSV per part, trimmed and case-insensitive; JSON
+/// exactly.
+fn alias_key(format: Format, name: &str) -> String {
     match format {
-        Format::Csv => csv::known(name),
-        Format::Json => json::NAMES.contains(&name),
+        Format::Csv => csv::key(name),
+        Format::Json => name.to_owned(),
     }
 }
 

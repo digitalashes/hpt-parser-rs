@@ -28,6 +28,7 @@ const PATHS: &[&[&str]] = &[
 ];
 
 /// Every member name read, which an alias may stand for.
+#[cfg(feature = "config")]
 pub(crate) const NAMES: &[&str] = &[
     "hospital_name",
     "last_updated_on",
@@ -233,12 +234,12 @@ fn array(v: Option<&Value>) -> std::slice::Iter<'_, Value> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "config"))]
 mod tests {
     /// Every name the code reads is in `NAMES`, so it can be an alias target.
     #[test]
     fn names() {
-        let code = include_str!("mod.rs").split("#[cfg(test)]").next().unwrap();
+        let code = include_str!("mod.rs").split("#[cfg(all(test").next().unwrap();
         let names = code.split("const NAMES").nth(1).unwrap().split("];").nth(1).unwrap();
         for literal in names.split('"').skip(1).step_by(2) {
             if literal.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
