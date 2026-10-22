@@ -10,8 +10,8 @@
 //!
 //! Values are kept as the text in the file, trimmed; an empty cell is `None`. Nothing is
 //! checked or converted, so a sloppy value never fails the parse. An [`Error`] means the
-//! file cannot be read at all: IO, no CSV header, JSON syntax, or a JSON
-//! `standard_charge_information` that is not an array.
+//! file cannot be read at all: IO, no CSV header, JSON syntax, or a JSON file that is not
+//! an object or whose `standard_charge_information` is not an array.
 //!
 //! ```
 //! use hpt_parser::{Format, Parser};
@@ -202,8 +202,9 @@ pub enum Error {
         line: u64,
         message: String,
     },
-    /// JSON syntax, no JSON value, or `standard_charge_information` not an array; `line` and
-    /// `column` are 1-based, the column in chars.
+    /// JSON syntax, no JSON value, a top-level value that is not an object, or
+    /// `standard_charge_information` not an array; `line` and `column` are 1-based, the
+    /// column in chars.
     Json {
         line: u64,
         column: u64,

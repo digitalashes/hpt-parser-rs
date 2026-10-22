@@ -80,7 +80,8 @@ type Step = Result<(), End>;
 
 /// The values at `paths`, in `@streamparser/json` selector syntax without the `$`
 /// (`&["a", "*"]` is `$.a.*`), with names or `*` as selectors. `*` selects an array's
-/// elements: the value it is under is an error when it is not an array. Values elsewhere are
+/// elements: the value it is under is an error when it is not an array. The paths name
+/// members, so a top-level value that is not an object is an error too. Values elsewhere are
 /// checked but never built.
 pub struct Parser<R> {
     stream: text::Stream<R>,
@@ -547,6 +548,9 @@ impl Tokens {
     /// The token parser's `write`. At the top level a value ends parsing before `expect`
     /// is read again, so it is set as inside a container.
     fn token(&mut self, token: Token) -> Step {
+        if self.stack.is_empty() && !matches!(token, Token::LeftBrace) {
+            return Err(End::Invalid("the top-level value is not an object".into()));
+        }
         if self.expect == Expect::VALUE
             && self.item_depths & (1 << self.stack.len().min(63)) != 0
             && matches!(token, Token::Value(_) | Token::LeftBrace)
@@ -719,7 +723,7 @@ mod tests {
             assert_eq!(position("{\n\"é\" {", chunk), (2, 5));
             assert_eq!(position("\u{feff}\n\n{\"a\": ", chunk), (3, 7));
             assert_eq!(position("\u{feff}x", chunk), (1, 1));
-            assert_eq!(position("[1, 2", chunk), (1, 6));
+            assert_eq!(position("{\"b\": [1, 2", chunk), (1, 12));
             assert_eq!(position(" \n ", chunk), (2, 2));
         }
     }
@@ -733,5 +737,15 @@ mod tests {
             assert_eq!(message, "b is not an array");
         }
         assert_eq!(values("{\"b\": []}", 65536).unwrap(), []);
+    }
+
+    #[test]
+    fn top_level_must_be_an_object() {
+        for input in ["[{\"a\": 1}]", " 5", "\"a\"", "null"] {
+            let Err(Error::Json { message, .. }) = values(input, 65536) else {
+                panic!("{input}");
+            };
+            assert_eq!(message, "the top-level value is not an object", "{input}");
+        }
     }
 }
