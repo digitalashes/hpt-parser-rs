@@ -196,6 +196,7 @@ Every column is optional (nullable).
 | `"codes_by_type"`                   | Codes as `{"TYPE":["code",...]}`, sorted. |
 | `"codes_list"`                      | Codes as a list of `TYPE:code`, sorted. |
 | `"hash"`                            | A 128-bit FNV-1a hash of the text, as hex: a stable id. |
+| `{ plugin = "name.function" }`      | A plugin function (below). |
 
 **Aliases.** Some files use their own names for CMS columns. `[aliases.csv]` and
 `[aliases.json]` map a CMS name to the names read as it; the ones a file used end up in
@@ -208,6 +209,61 @@ the metadata as `aliases_used`.
 [aliases.json]
 modifier_code = ["modifiers"]
 ```
+
+### Plugins
+
+What the built-in transforms cannot do, a plugin can: a WASM module made with
+[Extism](https://extism.org), in any language with an Extism PDK. It runs sandboxed, with
+no files, no network and no WASI, 60 seconds per call and 256 MiB of memory.
+
+```toml
+[[plugin]]
+name = "acme"
+path = "acme.wasm"            # relative to the config file
+config = { region = "us" }    # read by the plugin as Extism config
+
+[[column]]
+name = "payer"
+from = "payer.name"
+type = "string"
+transform = ["trim", { plugin = "acme.normalize" }]   # a value transform
+
+[[column]]
+name = "region"
+plugin = "acme.region"        # a computed column
+type = "string"
+
+[[filter]]
+plugin = "acme.keep"          # keeps or drops records
+
+[[metadata]]
+plugin = "acme.source"        # adds fields to the metadata
+```
+
+| Hook            | Gets                  | Answers                       |
+|-----------------|-----------------------|-------------------------------|
+| value transform | `{"values":[...]}`    | `{"values":[...]}`            |
+| computed column | `{"records":[...]}`   | `{"values":[...]}`            |
+| filter          | `{"records":[...]}`   | `{"keep":[true,false,...]}`   |
+| metadata        | the metadata object   | `{"fields":{"key":"value"}}`  |
+
+- Calls are batched, up to 8192 records or values each, and an answer has one item per
+  input, in order.
+- A record is flat, keyed by field name, with the fields that have a value:
+  `{"charge.description":"MRI brain","charge.codes":[{"code":"70551","type":"CPT"}],"payer.name":"Acme",...}`.
+  `metadata.*` fields are not in it.
+- A value is a string, a list of strings, the codes as above, or null. An answer's
+  strings, lists and numbers go on through the rest of the transforms and the cast.
+- The `[[metadata]]` hooks run once after the last record; their fields go to `extra`
+  in the last file's footer.
+- A plugin that fails, or answers in the wrong shape or with the wrong number of items,
+  stops the run (exit 1).
+- The JSON costs time: on the 2.5 GB file above, a filter over every record and a
+  computed column took the run from 7.6 to 18 seconds. Read only the fields you use
+  (typed structs, not a generic JSON value: that took 43 seconds).
+
+[`tests/plugin/src/lib.rs`](tests/plugin/src/lib.rs) is a plugin in Rust with a function
+for each hook.
 
 ### What is in a Parquet file
 
@@ -224,9 +280,9 @@ SELECT value FROM parquet_kv_metadata('charges.parquet') WHERE key = 'hpt.metada
 pq.read_metadata("charges.parquet").metadata[b"hpt.metadata"]
 ```
 
-A JSON file whose header comes after its charge items gives the first rows nulls in the
-`metadata.*` columns; the command warns when that happens, and the last file's footer is
-complete.
+A JSON file whose header comes after its charge items gives the rows read before it nulls
+in the `metadata.*` columns; the command warns when that happens, and the last file's
+footer is complete.
 
 ## Library
 
@@ -287,16 +343,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 |-----------|---------|------|
 | `config`  | yes     | The TOML config, its transforms and casts (`toml`, `serde`, `serde_json`). |
 | `parquet` | yes     | Parquet output and the `hpt-parser` binary (`parquet`, `bytes`). |
+| `plugins` | yes     | WASM plugins in the config (`extism`, on wasmtime). |
 
 Without default features the parser has no dependencies:
 `hpt-parser = { git = "...", default-features = false }`.
 
 ## Roadmap
 
-- WASM plugins named in the config: value transforms, computed columns, record filters
-  and metadata fields. The config already accepts `[[plugin]]`, `[[filter]]` and
-  `plugin = "name.function"`; until they run, a plugin column is null and a plugin
-  transform leaves the value as it is.
 - A release on crates.io, and binaries.
 
 ## License

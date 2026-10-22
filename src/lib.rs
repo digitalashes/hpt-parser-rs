@@ -40,6 +40,8 @@ mod csv;
 mod json;
 #[cfg(feature = "parquet")]
 pub mod parquet;
+#[cfg(feature = "plugins")]
+mod plugin;
 mod text;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -258,6 +260,13 @@ pub enum Error {
         /// Names the file, the TOML position or the column.
         message: String,
     },
+    /// A plugin function failed, answered in the wrong shape, or cannot be loaded.
+    Plugin {
+        /// `<plugin>.<function>`, or the plugin's name when it does not load.
+        plugin: String,
+        /// What went wrong.
+        message: String,
+    },
     /// Writing a Parquet file.
     #[cfg(feature = "parquet")]
     Parquet(::parquet::errors::ParquetError),
@@ -272,6 +281,7 @@ impl fmt::Display for Error {
                 write!(f, "line {line}, column {column}: {message}")
             }
             Error::Config { message } => f.write_str(message),
+            Error::Plugin { plugin, message } => write!(f, "plugin {plugin}: {message}"),
             #[cfg(feature = "parquet")]
             Error::Parquet(e) => e.fmt(f),
         }

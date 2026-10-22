@@ -22,6 +22,12 @@
 //! `setting`, `methodology`, `code_type`, `drug_unit` or `billing_class`), `{ split = "|" }`,
 //! `{ default = "x" }`, `codes_by_type`, `codes_list`, `hash`, `{ plugin = "name.fn" }`.
 //!
+//! Plugins (feature `plugins`) are WASM modules, `[[plugin]]` with a `name` and a `path`
+//! (relative to the config file); their functions are named `<name>.<function>` and get
+//! JSON, a batch of records or values at a time. A column computed by a plugin has
+//! `plugin = "name.function"` in place of `from`; `[[filter]]` and `[[metadata]]` take a
+//! `plugin` too, to keep or drop records and to add fields to the file's metadata.
+//!
 //! `[aliases.csv]` and `[aliases.json]` name the non-standard names a file of that format
 //! may use for a CMS name: `"standard_charge | gross" = ["gross_charges"]` (see
 //! [`crate::Parser::with_aliases`]).
@@ -49,7 +55,9 @@ pub struct Config {
     /// `[[column]]`, in order.
     pub columns: Vec<Column>,
     /// `[[filter]]`.
-    pub filters: Vec<Filter>,
+    pub filters: Vec<Hook>,
+    /// `[[metadata]]`.
+    pub metadata: Vec<Hook>,
 }
 
 /// `[output]`: kept as written, read by the writer.
@@ -89,10 +97,11 @@ pub struct Plugin {
     pub config: BTreeMap<String, toml::Value>,
 }
 
-/// `[[filter]]`: a plugin function that keeps or drops each record.
+/// `[[filter]]`, a plugin function that keeps or drops each record, or `[[metadata]]`, one
+/// that adds fields to the file's metadata once the last record is read.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Filter {
+pub struct Hook {
     /// `<plugin>.<function>`.
     pub plugin: String,
 }
@@ -222,7 +231,9 @@ struct Raw {
     #[serde(default)]
     column: Vec<RawColumn>,
     #[serde(default)]
-    filter: Vec<Filter>,
+    filter: Vec<Hook>,
+    #[serde(default)]
+    metadata: Vec<Hook>,
 }
 
 #[derive(Deserialize)]
@@ -250,7 +261,12 @@ impl Config {
     pub fn load(path: &Path) -> Result<Self, Error> {
         let error = |message| Error::Config { message: format!("{}: {message}", path.display()) };
         let text = std::fs::read_to_string(path).map_err(|e| error(e.to_string()))?;
-        Self::parse(&text).map_err(|e| error(e.to_string()))
+        let mut config = Self::parse(&text).map_err(|e| error(e.to_string()))?;
+        let dir = path.parent().unwrap_or(Path::new(""));
+        for p in &mut config.plugins {
+            p.path = dir.join(&p.path);
+        }
+        Ok(config)
     }
 
     /// # Errors
@@ -271,8 +287,11 @@ impl Config {
             let column = column(c, &raw.plugin);
             columns.push(column.map_err(|e| error(format!("column `{name}`: {e}")))?);
         }
-        for f in &raw.filter {
-            plugin_function(&f.plugin, &raw.plugin).map_err(|e| error(format!("filter: {e}")))?;
+        for (table, hooks) in [("filter", &raw.filter), ("metadata", &raw.metadata)] {
+            for h in hooks {
+                plugin_function(&h.plugin, &raw.plugin)
+                    .map_err(|e| error(format!("{table}: {e}")))?;
+            }
         }
         check_aliases(&raw.aliases).map_err(error)?;
         Ok(Config {
@@ -281,6 +300,7 @@ impl Config {
             plugins: raw.plugin,
             columns,
             filters: raw.filter,
+            metadata: raw.metadata,
         })
     }
 
@@ -534,29 +554,212 @@ enum Work<'a> {
 
 impl Column {
     /// The column's value for one record. A plugin column is null and a plugin transform
-    /// passes the value on: plugins are called by the writer (feature `plugins`).
+    /// passes the value on: the Parquet writer calls plugins, a batch at a time.
+    #[must_use]
     pub fn value<'a>(&self, record: &'a Record, metadata: &'a Metadata) -> Value<'a> {
         let Source::Fields(fields) = &self.source else {
             return Value::Null;
         };
-        let mut work = match &fields[..] {
-            [field] => field.get(record, metadata),
-            fields => {
-                let cells: Vec<_> = fields.iter().map(|f| flat(f.get(record, metadata))).collect();
-                if cells.iter().all(Option::is_none) {
-                    Work::Null
-                } else {
-                    let cells: Vec<_> = cells.iter().map(|c| c.as_deref().unwrap_or("")).collect();
-                    Work::Text(Cow::Owned(cells.join("|")))
-                }
-            }
-        };
+        let mut work = read(fields, record, metadata);
         for t in &self.transforms {
             work = apply(t, work);
         }
         cast(work, self.kind)
     }
 }
+
+/// One field's value, or several fields' texts joined by `|`.
+fn read<'a>(fields: &[Field], record: &'a Record, metadata: &'a Metadata) -> Work<'a> {
+    match fields {
+        [field] => field.get(record, metadata),
+        fields => {
+            let cells: Vec<_> = fields.iter().map(|f| flat(f.get(record, metadata))).collect();
+            if cells.iter().all(Option::is_none) {
+                Work::Null
+            } else {
+                let cells: Vec<_> = cells.iter().map(|c| c.as_deref().unwrap_or("")).collect();
+                Work::Text(Cow::Owned(cells.join("|")))
+            }
+        }
+    }
+}
+
+/// The batch path of the Parquet writer: plugins get a batch of records or values a call.
+#[cfg(feature = "parquet")]
+mod batch {
+    use super::CodeJson;
+    use super::{Column, Config, FIELDS, Source, Transform, Value, Work, apply, cast, read};
+    use crate::{Error, Metadata, Record};
+    use serde::ser::{Serialize, SerializeMap, Serializer};
+    use std::borrow::Cow;
+
+    impl Column {
+        /// Whether a plugin computes the column or one of its transforms.
+        pub(crate) fn has_plugins(&self) -> bool {
+            matches!(self.source, Source::Plugin(_))
+                || self.transforms.iter().any(|t| matches!(t, Transform::Plugin(_)))
+        }
+
+        /// The column's values for a batch of records; each plugin function is called once
+        /// for the batch, the other transforms once per record.
+        pub(crate) fn values<'a>(
+            &self,
+            records: &'a [Record],
+            metadata: &'a Metadata,
+            call: &mut Call<'_>,
+        ) -> Result<Vec<Value<'a>>, Error> {
+            let mut works: Vec<Work<'a>> = match &self.source {
+                Source::Fields(fields) => {
+                    records.iter().map(|r| read(fields, r, metadata)).collect()
+                }
+                Source::Plugin(f) => {
+                    plugin_values(f, call(f, &records_json(records))?, records.len())?
+                }
+            };
+            for t in &self.transforms {
+                works = match t {
+                    Transform::Plugin(f) => {
+                        #[derive(serde::Serialize)]
+                        struct Values<'w, 'a> {
+                            values: &'w [Work<'a>],
+                        }
+                        let input = serde_json::to_vec(&Values { values: &works })
+                            .expect("text, lists and codes always serialize");
+                        plugin_values(f, call(f, &input)?, works.len())?
+                    }
+                    t => works.into_iter().map(|w| apply(t, w)).collect(),
+                };
+            }
+            Ok(works.into_iter().map(|w| cast(w, self.kind)).collect())
+        }
+    }
+
+    /// Calls a plugin function, `<plugin>.<function>`, with its JSON input.
+    pub(crate) type Call<'c> = dyn FnMut(&str, &[u8]) -> Result<serde_json::Value, Error> + 'c;
+
+    impl Config {
+        /// Drops the records a `[[filter]]` does not keep, one filter after another.
+        pub(crate) fn filter(
+            &self,
+            records: &mut Vec<Record>,
+            call: &mut Call<'_>,
+        ) -> Result<(), Error> {
+            for f in &self.filters {
+                if records.is_empty() {
+                    break;
+                }
+                let keep = answer(
+                    &f.plugin,
+                    call(&f.plugin, &records_json(records))?,
+                    "keep",
+                    records.len(),
+                )?;
+                let keep: Vec<bool> = (keep.iter())
+                    .map(|k| {
+                        k.as_bool().ok_or_else(|| {
+                            plugin_error(&f.plugin, format!("`keep` holds {k}, not true or false"))
+                        })
+                    })
+                    .collect::<Result<_, _>>()?;
+                let mut keep = keep.into_iter();
+                records.retain(|_| keep.next().expect("one answer per record"));
+            }
+            Ok(())
+        }
+    }
+
+    pub(crate) fn plugin_error(function: &str, message: String) -> Error {
+        Error::Plugin { plugin: function.into(), message }
+    }
+
+    /// The answer's `key` array, one item per input.
+    pub(crate) fn answer(
+        function: &str,
+        mut answer: serde_json::Value,
+        key: &str,
+        n: usize,
+    ) -> Result<Vec<serde_json::Value>, Error> {
+        match answer.get_mut(key).map(serde_json::Value::take) {
+            Some(serde_json::Value::Array(items)) if items.len() == n => Ok(items),
+            Some(serde_json::Value::Array(items)) => Err(plugin_error(
+                function,
+                format!("{} items in `{key}` for {n} inputs", items.len()),
+            )),
+            _ => Err(plugin_error(function, format!("the answer has no `{key}` array"))),
+        }
+    }
+
+    fn plugin_values(
+        function: &str,
+        values: serde_json::Value,
+        n: usize,
+    ) -> Result<Vec<Work<'static>>, Error> {
+        Ok(answer(function, values, "values", n)?.into_iter().map(json_work).collect())
+    }
+
+    /// `{"records":[..]}`: each record flat, keyed by the `charge.*`, `payer.*` and
+    /// `record.position` field names, absent values left out.
+    fn records_json(records: &[Record]) -> Vec<u8> {
+        #[derive(serde::Serialize)]
+        struct Records<'a> {
+            records: Vec<Flat<'a>>,
+        }
+        let records = Records { records: records.iter().map(Flat).collect() };
+        serde_json::to_vec(&records).expect("text, lists and codes always serialize")
+    }
+
+    struct Flat<'a>(&'a Record);
+
+    impl Serialize for Flat<'_> {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            let none = Metadata::default();
+            let mut map = s.serialize_map(None)?;
+            for (name, get) in FIELDS.iter().filter(|(name, _)| !name.starts_with("metadata.")) {
+                let work = get(self.0, &none);
+                if !matches!(work, Work::Null) {
+                    map.serialize_entry(name, &work)?;
+                }
+            }
+            map.end()
+        }
+    }
+
+    /// Text as a string, lists as arrays, codes as `[{"code":..,"type":..}]`.
+    impl Serialize for Work<'_> {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            match self {
+                Work::Null => s.serialize_unit(),
+                Work::Text(text) => s.serialize_str(text),
+                Work::List(list) => list.serialize(s),
+                Work::Codes(codes) => s.collect_seq(codes.iter().map(CodeJson::from)),
+                Work::Json(text) => match serde_json::from_str::<serde_json::Value>(text) {
+                    Ok(value) => value.serialize(s),
+                    Err(_) => s.serialize_str(text),
+                },
+            }
+        }
+    }
+
+    /// A plugin's value: a string as text, an array of strings as a list, numbers and booleans
+    /// as their text, other JSON as JSON text.
+    fn json_work(value: serde_json::Value) -> Work<'static> {
+        use serde_json::Value as J;
+        match value {
+            J::Null => Work::Null,
+            J::String(s) => Work::Text(Cow::Owned(s)),
+            J::Array(items) if items.iter().all(J::is_string) => Work::List(
+                (items.into_iter())
+                    .filter_map(|i| if let J::String(s) = i { Some(s) } else { None })
+                    .collect(),
+            ),
+            J::Number(_) | J::Bool(_) => Work::Text(Cow::Owned(value.to_string())),
+            value => Work::Json(value.to_string()),
+        }
+    }
+}
+
+#[cfg(feature = "parquet")]
+pub(crate) use batch::{Call, plugin_error};
 
 /// A value as one text: lists joined by `|`, codes as `codes_list` gives them.
 fn flat(work: Work<'_>) -> Option<Cow<'_, str>> {
@@ -697,15 +900,20 @@ fn to_json(value: &impl serde::Serialize) -> String {
 
 /// `[{"code":"99213","type":"CPT"},...]`, as read.
 fn codes_json(codes: &[Code]) -> String {
-    #[derive(serde::Serialize)]
-    struct Item<'a> {
-        code: &'a str,
-        #[serde(rename = "type")]
-        code_type: Option<&'a str>,
+    to_json(&codes.iter().map(CodeJson::from).collect::<Vec<_>>())
+}
+
+#[derive(serde::Serialize)]
+struct CodeJson<'a> {
+    code: &'a str,
+    #[serde(rename = "type")]
+    code_type: Option<&'a str>,
+}
+
+impl<'a> From<&'a Code> for CodeJson<'a> {
+    fn from(c: &'a Code) -> Self {
+        CodeJson { code: &c.code, code_type: c.code_type.as_deref() }
     }
-    let items: Vec<Item> =
-        codes.iter().map(|c| Item { code: &c.code, code_type: c.code_type.as_deref() }).collect();
-    to_json(&items)
 }
 
 fn cast(work: Work<'_>, kind: Type) -> Value<'_> {

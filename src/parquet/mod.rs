@@ -7,7 +7,7 @@
 
 mod group;
 
-use crate::config::{self, Column, Config, Type};
+use crate::config::{self, Call, Column, Config, Type, Value, plugin_error};
 use crate::{Error, Metadata, Parser};
 use ::parquet::basic::{
     BrotliLevel, Compression, ConvertedType, GzipLevel, LogicalType, Repetition, Type as Physical,
@@ -18,10 +18,14 @@ use ::parquet::file::properties::WriterProperties;
 use ::parquet::file::writer::SerializedFileWriter;
 use ::parquet::schema::types::{SchemaDescriptor, Type as Schema, TypePtr};
 use group::Group;
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Records a plugin function gets in one call.
+const BATCH: usize = 8192;
 
 /// The footer key that holds the file's metadata.
 pub const METADATA_KEY: &str = "hpt.metadata";
@@ -149,77 +153,171 @@ struct Open {
 /// after the whole input is read), then `on_chunk` gets it. No records at all still give one
 /// file with zero rows.
 ///
+/// With plugins, records are read in batches of 8192: the `[[filter]]` plugins drop records
+/// from a batch (dropped records count for nothing), then each plugin function is called
+/// once for the batch. The `[[metadata]]` plugins run once after the last record, and the
+/// fields they add are in the last file's footer.
+///
 /// # Errors
 ///
-/// The parser's error, IO or Parquet errors. Files closed so far stay; the open one is
-/// left without a footer.
+/// The parser's error, a plugin's, IO or Parquet errors. Files closed so far stay; the open
+/// one is left without a footer.
+#[expect(clippy::missing_panics_doc, reason = "each column has a value per record")]
 pub fn write<R: Read>(
     mut parser: Parser<R>,
     config: &Config,
     output: &Output,
-    mut on_chunk: impl FnMut(&Chunk),
+    on_chunk: impl FnMut(&Chunk),
 ) -> Result<Summary, Error> {
     let schema = schema(&config.columns)?;
     let properties =
         Arc::new(WriterProperties::builder().set_compression(output.compression).build());
-    let open = |index| -> Result<Open, Error> {
-        let path = chunk_path(&output.path, output.chunk_size, index);
-        let writer =
-            SerializedFileWriter::new(File::create(&path)?, schema.clone(), properties.clone())?;
-        Ok(Open { chunk: Chunk { path, index, records: 0 }, writer })
-    };
     let descr = SchemaDescriptor::new(schema.clone());
-    let mut group = Group::new(&config.columns, descr.columns(), &properties);
-    let mut file: Option<Open> = None;
-    let mut summary = Summary::default();
+    let group = Group::new(&config.columns, descr.columns(), &properties);
+    let mut files = Files {
+        output,
+        schema,
+        properties,
+        group,
+        file: None,
+        summary: Summary::default(),
+        on_chunk,
+    };
+    #[cfg(feature = "plugins")]
+    let mut plugins = crate::plugin::Plugins::load(config)?;
+    #[cfg(feature = "plugins")]
+    let call: &mut Call = &mut |function, input| plugins.call(function, input);
+    #[cfg(not(feature = "plugins"))]
+    if !config.plugins.is_empty() {
+        let message = "the config has plugins, this build has no feature `plugins`".into();
+        return Err(Error::Config { message });
+    }
+    // A config without plugins names no plugin function.
+    #[cfg(not(feature = "plugins"))]
+    let call: &mut Call = &mut |_, _| unreachable!("no plugins");
     let mut first = None;
-    while let Some(record) = parser.next() {
-        let record = record?;
-        let metadata = parser.metadata();
-        if let Some(f) =
-            file.take_if(|f| output.chunk_size > 0 && f.chunk.records == output.chunk_size)
-        {
-            close(f, &mut group, metadata, &mut summary, &mut on_chunk)?;
+    if config.plugins.is_empty() {
+        // Record by record: even a batch of one costs chi 6% (8.2 s, 8.7 s).
+        while let Some(record) = parser.next() {
+            let record = record?;
+            let metadata = parser.metadata();
+            files.row(config.columns.iter().map(|c| c.value(&record, metadata)), metadata)?;
+            if first.is_none() {
+                first = Some((record, metadata.clone()));
+            }
         }
-        let f = match &mut file {
-            Some(f) => f,
-            None => file.insert(open(summary.chunks + 1)?),
-        };
-        group.push(config.columns.iter().map(|c| c.value(&record, metadata)))?;
-        f.chunk.records += 1;
-        if group.len() == output.row_group_size {
-            group.flush(&mut f.writer)?;
-        }
-        if first.is_none() {
-            first = Some((record, metadata.clone()));
+    } else {
+        let mut batch = Vec::with_capacity(BATCH);
+        loop {
+            batch.clear();
+            for record in parser.by_ref().take(BATCH) {
+                batch.push(record?);
+            }
+            let Some(record) = batch.first() else { break };
+            let metadata = parser.metadata();
+            if first.is_none() {
+                first = Some((record.clone(), metadata.clone()));
+            }
+            config.filter(&mut batch, call)?;
+            // Columns with plugins for the whole batch, the others record by record: a
+            // column at a time over 8192 records misses the cache (chi: 8.2 s became 11.7 s).
+            let mut batched = Vec::with_capacity(config.columns.len());
+            for c in &config.columns {
+                let values = c.has_plugins().then(|| c.values(&batch, metadata, call));
+                batched.push(values.transpose()?.map(Vec::into_iter));
+            }
+            for record in &batch {
+                let values = config.columns.iter().zip(&mut batched).map(|(c, b)| match b {
+                    Some(values) => values.next().expect("a value per record"),
+                    None => c.value(record, metadata),
+                });
+                files.row(values, metadata)?;
+            }
         }
     }
-    let f = match file {
-        Some(f) => f,
-        None => open(1)?,
-    };
-    close(f, &mut group, parser.metadata(), &mut summary, &mut on_chunk)?;
+    let mut metadata = Cow::Borrowed(parser.metadata());
+    for hook in &config.metadata {
+        let input = serde_json::to_vec(&*metadata).expect("strings, lists and maps of them");
+        let Some(serde_json::Value::Object(fields)) =
+            call(&hook.plugin, &input)?.get_mut("fields").map(serde_json::Value::take)
+        else {
+            return Err(plugin_error(&hook.plugin, "the answer has no `fields` object".into()));
+        };
+        for (key, value) in fields {
+            let value = value.as_str().map_or_else(|| value.to_string(), String::from);
+            metadata.to_mut().extra.insert(key, value);
+        }
+    }
+    let mut summary = files.finish(&metadata)?;
     if let Some((record, seen)) = first {
-        summary.late_metadata = (config.columns.iter())
-            .any(|c| c.value(&record, &seen) != c.value(&record, parser.metadata()));
+        summary.late_metadata =
+            (config.columns.iter()).any(|c| c.value(&record, &seen) != c.value(&record, &metadata));
     }
     Ok(summary)
 }
 
-fn close(
-    mut f: Open,
-    group: &mut Group,
-    metadata: &Metadata,
-    summary: &mut Summary,
-    on_chunk: &mut impl FnMut(&Chunk),
-) -> Result<(), Error> {
-    group.flush(&mut f.writer)?;
-    f.writer.append_key_value_metadata(KeyValue::new(METADATA_KEY.into(), footer(metadata)));
-    f.writer.close()?;
-    summary.chunks += 1;
-    summary.records += f.chunk.records;
-    on_chunk(&f.chunk);
-    Ok(())
+/// The files closed so far and the one being written.
+struct Files<'o, F> {
+    output: &'o Output,
+    schema: TypePtr,
+    properties: Arc<WriterProperties>,
+    group: Group,
+    file: Option<Open>,
+    summary: Summary,
+    on_chunk: F,
+}
+
+impl<F: FnMut(&Chunk)> Files<'_, F> {
+    /// Adds a row, first closing the open file if it is full.
+    fn row<'a>(
+        &mut self,
+        values: impl Iterator<Item = Value<'a>>,
+        metadata: &Metadata,
+    ) -> Result<(), Error> {
+        let chunk_size = self.output.chunk_size;
+        if let Some(f) = self.file.take_if(|f| chunk_size > 0 && f.chunk.records == chunk_size) {
+            self.close(f, metadata)?;
+        }
+        let f = match self.file.take() {
+            Some(f) => f,
+            None => self.open()?,
+        };
+        let f = self.file.insert(f);
+        self.group.push(values)?;
+        f.chunk.records += 1;
+        if self.group.len() == self.output.row_group_size {
+            self.group.flush(&mut f.writer)?;
+        }
+        Ok(())
+    }
+
+    fn open(&self) -> Result<Open, Error> {
+        let index = self.summary.chunks + 1;
+        let path = chunk_path(&self.output.path, self.output.chunk_size, index);
+        let file = File::create(&path)?;
+        let writer = SerializedFileWriter::new(file, self.schema.clone(), self.properties.clone())?;
+        Ok(Open { chunk: Chunk { path, index, records: 0 }, writer })
+    }
+
+    fn close(&mut self, mut f: Open, metadata: &Metadata) -> Result<(), Error> {
+        self.group.flush(&mut f.writer)?;
+        f.writer.append_key_value_metadata(KeyValue::new(METADATA_KEY.into(), footer(metadata)));
+        f.writer.close()?;
+        self.summary.chunks += 1;
+        self.summary.records += f.chunk.records;
+        (self.on_chunk)(&f.chunk);
+        Ok(())
+    }
+
+    /// Closes the open file, or writes one with no rows when there was no record.
+    fn finish(mut self, metadata: &Metadata) -> Result<Summary, Error> {
+        let f = match self.file.take() {
+            Some(f) => f,
+            None => self.open()?,
+        };
+        self.close(f, metadata)?;
+        Ok(self.summary)
+    }
 }
 
 fn chunk_path(path: &Path, chunk_size: u64, index: u32) -> PathBuf {
