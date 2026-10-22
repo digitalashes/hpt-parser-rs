@@ -678,7 +678,7 @@ mod batch {
     }
 
     /// Calls a plugin function, `<plugin>.<function>`, with its JSON input.
-    pub(crate) type Call<'c> = dyn FnMut(&str, &[u8]) -> Result<Box<RawValue>, Error> + 'c;
+    pub(crate) type Call<'c> = dyn FnMut(&str, &[u8]) -> Result<Box<RawValue>, Error> + Send + 'c;
 
     impl Config {
         /// Drops the records a `[[filter]]` does not keep, one filter after another.

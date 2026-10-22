@@ -25,10 +25,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, mpsc};
 use std::{panic, thread};
 
-/// Records read at a time: a plugin function gets a batch in one call, and without plugins
-/// a batch goes to the thread that makes rows. A batch stays in the cache: 8192 took a
-/// 2.5 GB file with plugins from 3.7 to 4.6 s and its peak memory from 39 to 57 MB (47 to
-/// 175 MB with every field in the plugin JSON).
+/// Records read at a time: a batch goes to the thread that makes rows, where a plugin
+/// function gets it in one call. A batch stays in the cache: 8192 took a 2.5 GB file with
+/// plugins from 3.7 to 4.6 s and its peak memory from 39 to 57 MB (47 to 175 MB with every
+/// field in the plugin JSON).
 const BATCH: usize = 512;
 
 /// The footer key that holds the file's metadata.
@@ -165,11 +165,12 @@ struct Open {
 /// after the whole input is read), then `on_chunk` gets it. No records at all still give one
 /// file with zero rows.
 ///
-/// Records are read in batches of 512. Without plugins, another thread makes the rows of
-/// each batch while the next one is read. With a `[[filter]]` or a column with plugins, the
-/// filters drop records from a batch (dropped records count for nothing), then each plugin
-/// function is called once for the batch. The `[[metadata]]` plugins run once after the last
-/// record, and the fields they add are in the last file's footer.
+/// Records are read in batches of 512 (fewer where the metadata changes), and another
+/// thread makes the rows of each batch while the next one is read. With a `[[filter]]` or a
+/// column with plugins, the filters drop records from a batch there (dropped records count
+/// for nothing), then each plugin function is called once for the batch. The `[[metadata]]`
+/// plugins run once after the last record, and the fields they add are in the last file's
+/// footer.
 ///
 /// # Errors
 ///
@@ -211,19 +212,13 @@ pub fn write<R: Read>(
     let mut first = None;
     // Without a filter or a column with plugins (`[[metadata]]` alone runs at the end).
     if config.filters.is_empty() && !config.columns.iter().any(Column::has_plugins) {
-        rows(&mut parser, config, &mut files, &mut first, &mut on_chunk)?;
+        rows(&mut parser, &mut files, &mut first, &mut on_chunk, |files, records, metadata| {
+            records.iter().try_for_each(|record| {
+                files.row(config.columns.iter().map(|c| c.value(record, metadata)), metadata)
+            })
+        })?;
     } else {
-        let mut batch = Vec::with_capacity(BATCH);
-        loop {
-            batch.clear();
-            for record in parser.by_ref().take(BATCH) {
-                batch.push(record?);
-            }
-            let Some(record) = batch.first() else { break };
-            let metadata = parser.metadata();
-            if first.is_none() {
-                first = Some((record.clone(), metadata.clone()));
-            }
+        rows(&mut parser, &mut files, &mut first, &mut on_chunk, |files, mut batch, metadata| {
             config.filter(&mut batch, metadata, call)?;
             // Columns with plugins for the whole batch, the others record by record: every
             // column a batch at a time cost nyp 6% (1.73 s became 1.83 s).
@@ -232,18 +227,14 @@ pub fn write<R: Read>(
                 let values = c.has_plugins().then(|| c.values(&batch, metadata, call));
                 batched.push(values.transpose()?.map(Vec::into_iter));
             }
-            let written = batch.iter().try_for_each(|record| {
+            batch.iter().try_for_each(|record| {
                 let values = config.columns.iter().zip(&mut batched).map(|(c, b)| match b {
                     Some(values) => values.next().expect("a value per record"),
                     None => c.value(record, metadata),
                 });
                 files.row(values, metadata)
-            });
-            for c in files.closed.drain(..) {
-                on_chunk(&c);
-            }
-            written?;
-        }
+            })
+        })?;
     }
     let mut metadata = Cow::Borrowed(parser.metadata());
     for function in &config.metadata {
@@ -271,25 +262,24 @@ pub fn write<R: Read>(
     Ok(summary)
 }
 
-/// Reads the records in batches; a thread of its own makes their rows while the next batch
-/// is read. A batch ends early where the metadata changes, so that each row has the
-/// metadata its record was read with. The files the thread closes come back here for
-/// `on_chunk`. A parser error still has the records before it written first.
-fn rows<R: Read>(
+/// Reads the records in batches; a thread of its own hands each batch to `make`, which
+/// makes its rows, while the next batch is read. A batch ends early where the metadata
+/// changes, so that each row has the metadata its record was read with. The files the
+/// thread closes come back here for `on_chunk`. A parser error still has the records before
+/// it written first.
+fn rows<'o, R: Read>(
     parser: &mut Parser<R>,
-    config: &Config,
-    files: &mut Files<'_>,
+    files: &mut Files<'o>,
     first: &mut Option<(Record, Metadata)>,
     on_chunk: &mut impl FnMut(&Chunk),
+    mut make: impl FnMut(&mut Files<'o>, Vec<Record>, &Metadata) -> Result<(), Error> + Send,
 ) -> Result<(), Error> {
     let (to_rows, batches) = mpsc::sync_channel::<(Vec<Record>, Arc<Metadata>)>(1);
     let (to_caller, closed) = mpsc::channel();
     thread::scope(|s| {
         let writer = s.spawn(move || {
             for (records, metadata) in batches {
-                let written = records.iter().try_for_each(|record| {
-                    files.row(config.columns.iter().map(|c| c.value(record, &metadata)), &metadata)
-                });
+                let written = make(files, records, &metadata);
                 // The caller is gone only when it panicked.
                 for c in files.closed.drain(..) {
                     _ = to_caller.send(c);
