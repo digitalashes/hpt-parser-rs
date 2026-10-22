@@ -8,7 +8,8 @@
 //! is kept apart from the records. A JSON file may put its header after the charge items:
 //! [`Parser::metadata`] is complete once the parser has returned `None`.
 //!
-//! Values are kept as the text in the file, trimmed; an empty cell is `None`. Nothing is
+//! Values are kept as the text in the file (CSV cells trimmed, JSON strings as written);
+//! an empty value is `None`. Nothing is
 //! checked or converted, so a sloppy value never fails the parse. An [`Error`] means the
 //! file cannot be read at all: IO, no CSV header, JSON syntax, or a JSON file that is not
 //! an object or whose `standard_charge_information` is not an array.

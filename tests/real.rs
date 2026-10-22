@@ -8,6 +8,13 @@
 use hpt_parser::{Format, Parser};
 use std::time::Instant;
 
+/// JSON for a `.json` file, CSV otherwise.
+fn format(path: &str) -> Format {
+    let json =
+        std::path::Path::new(path).extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
+    if json { Format::Json } else { Format::Csv }
+}
+
 #[test]
 #[ignore = "needs HPT_FILE"]
 fn real_file() {
@@ -19,9 +26,7 @@ fn real_file() {
         .collect();
     let file = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
     let start = Instant::now();
-    let json =
-        std::path::Path::new(&path).extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
-    let mut parser = Parser::new(file, if json { Format::Json } else { Format::Csv });
+    let mut parser = Parser::new(file, format(&path));
     let mut count = 0;
     for record in parser.by_ref() {
         let record = record.unwrap();
@@ -48,10 +53,8 @@ fn real_parquet() {
         output.compression = parse_compression(&codec).unwrap();
     }
     let file = std::io::BufReader::new(std::fs::File::open(&path).unwrap());
-    let json =
-        std::path::Path::new(&path).extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
     let start = Instant::now();
-    let parser = Parser::new(file, if json { Format::Json } else { Format::Csv });
+    let parser = Parser::new(file, format(&path));
     let summary = write(parser, &Config::builtin(), &output, |_| {}).unwrap();
     let size = std::fs::metadata(&output.path).unwrap().len();
     let reader = SerializedFileReader::new(std::fs::File::open(&output.path).unwrap()).unwrap();

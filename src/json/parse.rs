@@ -112,8 +112,8 @@ impl<R: Read> Parser<R> {
                     })
                     .fold(0, |depths, depth| depths | depth),
                 queue: VecDeque::new(),
-                at: Position { line: 1, column: 1 },
-                state: State::BOM_OR_START,
+                position: Position { line: 1, column: 1 },
+                state: State::START,
                 buffer: String::new(),
                 unicode: 0,
                 high_surrogate: None,
@@ -139,7 +139,7 @@ impl<R: Read> Parser<R> {
             if !self.stream.next(&mut self.text)? {
                 self.ended = true;
                 if let End::Invalid(message) = self.tokens.end() {
-                    return Err(self.tokens.at.error(message));
+                    return Err(self.tokens.position.error(message));
                 }
                 continue;
             }
@@ -148,17 +148,16 @@ impl<R: Read> Parser<R> {
                 let rest = text::remove_bom(chunk);
                 // What goes with the BOM counts for positions; the BOM itself takes no column.
                 let cut = &chunk[..chunk.len() - rest.len()];
-                self.tokens.at.advance(cut.get('\u{feff}'.len_utf8()..).unwrap_or_default());
+                self.tokens.position.advance(cut.strip_prefix('\u{feff}').unwrap_or_default());
                 chunk = rest;
             }
             let mut i = 0;
-            match self.tokens.write(chunk, &mut i) {
-                Ok(()) => self.tokens.at.advance(chunk),
+            let step = self.tokens.write(chunk, &mut i);
+            self.tokens.position.advance(&chunk[..i]);
+            match step {
+                Ok(()) => {}
                 Err(End::Done) => self.ended = true,
-                Err(End::Invalid(message)) => {
-                    self.tokens.at.advance(&chunk[..i]);
-                    return Err(self.tokens.at.error(message));
-                }
+                Err(End::Invalid(message)) => return Err(self.tokens.position.error(message)),
             }
         }
     }
@@ -199,7 +198,6 @@ impl Position {
 )]
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum State {
-    BOM_OR_START,
     START,
     /// `true`, `false` or `null` with this many bytes read: upstream's `TRUE1` to `NULL3`.
     LITERAL(&'static str, usize),
@@ -313,7 +311,7 @@ struct Tokens {
     /// Emitted values not yet pulled.
     queue: VecDeque<(Key, Value)>,
     /// Where the chunks written so far end.
-    at: Position,
+    position: Position,
     // tokenizer
     state: State,
     /// The string or number being read.
@@ -345,7 +343,7 @@ impl Tokens {
         while *i < b.len() {
             let n = b[*i];
             match self.state {
-                BOM_OR_START | START => match n {
+                START => match n {
                     b' ' | b'\n' | b'\r' | b'\t' => {}
                     b'{' => self.token(Token::LeftBrace)?,
                     b'}' => self.token(Token::RightBrace)?,
@@ -390,8 +388,7 @@ impl Tokens {
                 STRING_DEFAULT => match n {
                     b'"' => {
                         self.state = START;
-                        let spare = self.spare.strings.pop().unwrap_or_default();
-                        let s = Value::String(std::mem::replace(&mut self.buffer, spare));
+                        let s = Value::String(self.take_buffer());
                         self.token(Token::Value(s))?;
                     }
                     b'\\' => self.state = STRING_AFTER_BACKSLASH,
@@ -511,9 +508,14 @@ impl Tokens {
     }
 
     fn emit_number(&mut self) -> Step {
-        let spare = self.spare.strings.pop().unwrap_or_default();
-        let n = Value::Number(std::mem::replace(&mut self.buffer, spare));
+        let n = Value::Number(self.take_buffer());
         self.token(Token::Value(n))
+    }
+
+    /// The string or number read, a spare buffer taking its place.
+    fn take_buffer(&mut self) -> String {
+        let spare = self.spare.strings.pop().unwrap_or_default();
+        std::mem::replace(&mut self.buffer, spare)
     }
 
     /// The tokenizer's `end`.
@@ -527,7 +529,7 @@ impl Tokens {
             | NUMBER_AFTER_E_AND_DIGIT => {
                 (self.emit_number().err()).unwrap_or_else(|| self.end_tokens())
             }
-            BOM_OR_START | START => self.end_tokens(),
+            START => self.end_tokens(),
             state => End::Invalid(format!(
                 "the input ends in the middle of a token (state {})",
                 state.name()

@@ -39,18 +39,12 @@ impl<R: Read> Parser<R> {
     /// Reads up to the next charge item and queues its records; false at the end.
     pub fn fill(&mut self, pending: &mut VecDeque<Record>) -> Result<bool, Error> {
         while let Some((key, value)) = self.values.next()? {
-            let item = match &key {
-                Key::Index(i) => {
-                    item(&value, *i as u64, pending);
-                    true
-                }
-                Key::Name(name) => {
-                    header_field(&mut self.metadata, name, &value);
-                    false
-                }
-            };
+            match &key {
+                Key::Index(i) => item(&value, *i as u64, pending),
+                Key::Name(name) => header_field(&mut self.metadata, name, &value),
+            }
             self.values.recycle(value);
-            if item {
+            if matches!(key, Key::Index(_)) {
                 return Ok(true);
             }
         }
@@ -64,9 +58,9 @@ fn header_field(m: &mut Metadata, name: &str, v: &Value) {
         "hospital_name" => m.hospital_name = text(Some(v)),
         "last_updated_on" => m.last_updated_on = text(Some(v)),
         "version" => m.version = text(Some(v)),
-        "hospital_address" => m.hospital_address = list(v),
-        "hospital_location" | "location_name" => m.location_name = list(v),
-        "type_2_npi" => m.type_2_npi = list(v),
+        "hospital_address" => m.hospital_address = list(Some(v)),
+        "hospital_location" | "location_name" => m.location_name = list(Some(v)),
+        "type_2_npi" => m.type_2_npi = list(Some(v)),
         "license_information" => {
             m.license_number = get("license_number");
             m.license_state = get("state");
@@ -124,7 +118,7 @@ fn item(v: &Value, position: u64, pending: &mut VecDeque<Record>) {
         let charge = Charge {
             setting: get("setting"),
             billing_class: get("billing_class"),
-            modifiers: list(c.get("modifier_code").unwrap_or(&Value::Null)),
+            modifiers: list(c.get("modifier_code")),
             gross_charge: get("gross_charge"),
             discounted_cash: get("discounted_cash"),
             minimum: get("minimum"),
@@ -165,10 +159,10 @@ fn text(v: Option<&Value>) -> Option<String> {
 }
 
 /// An array's texts; a lone value is a list of one.
-fn list(v: &Value) -> Vec<String> {
+fn list(v: Option<&Value>) -> Vec<String> {
     match v {
-        Value::Array(items) => items.iter().filter_map(|v| text(Some(v))).collect(),
-        v => text(Some(v)).into_iter().collect(),
+        Some(Value::Array(items)) => items.iter().filter_map(|v| text(Some(v))).collect(),
+        v => text(v).into_iter().collect(),
     }
 }
 
