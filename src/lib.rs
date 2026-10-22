@@ -29,6 +29,8 @@
 //! assert_eq!(parser.metadata().license_state.as_deref(), Some("NY"));
 //! ```
 
+#[cfg(feature = "config")]
+pub mod config;
 mod csv;
 mod json;
 mod text;
@@ -210,6 +212,11 @@ pub enum Error {
         column: u64,
         message: String,
     },
+    /// An output config that does not load: the message names the file, the TOML
+    /// position or the column.
+    Config {
+        message: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -220,6 +227,7 @@ impl fmt::Display for Error {
             Error::Json { line, column, message } => {
                 write!(f, "line {line}, column {column}: {message}")
             }
+            Error::Config { message } => f.write_str(message),
         }
     }
 }

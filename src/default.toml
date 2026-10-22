@@ -1,0 +1,141 @@
+# The built-in output config: every record field as a column of its own, as read.
+#
+# Copy this file, change it and pass it with --config. Each [[column]] has a `name`,
+# reads `from` one field (or a list of fields, joined by `|`) or is computed by a `plugin`
+# function, and has a `type`: string, f64, i64, bool, date, json or list. The optional
+# `transform` list runs in order before the cast; a value that does not cast is null.
+#
+# Transforms: "trim", "upper", "lower", "money" (drops `$`, `,` and spaces),
+# { round = 2 }, { map = { ip = "inpatient" } }, { match = "setting", fuzzy = 0.8 }
+# (domains: setting, methodology, code_type, drug_unit, billing_class),
+# { split = "|" }, { default = "x" }, "codes_by_type", "codes_list", "hash",
+# { plugin = "name.function" }.
+#
+# More fields: record.position and metadata.{layout, version, hospital_name,
+# last_updated_on, location_name, hospital_address, license_number, license_state,
+# type_2_npi, attestation, attestation_confirmed, attester_name, extra.<key>}.
+
+[output]
+compression = "zstd:3"
+row_group_size = 256000
+chunk_size = 0
+
+[[column]]
+name = "charge_description"
+from = "charge.description"
+type = "string"
+
+[[column]]
+name = "charge_codes"
+from = "charge.codes"
+type = "json"
+
+[[column]]
+name = "charge_setting"
+from = "charge.setting"
+type = "string"
+
+[[column]]
+name = "charge_billing_class"
+from = "charge.billing_class"
+type = "string"
+
+[[column]]
+name = "charge_drug_unit"
+from = "charge.drug_unit"
+type = "string"
+
+[[column]]
+name = "charge_drug_unit_type"
+from = "charge.drug_unit_type"
+type = "string"
+
+[[column]]
+name = "charge_modifiers"
+from = "charge.modifiers"
+type = "list"
+
+[[column]]
+name = "charge_gross_charge"
+from = "charge.gross_charge"
+type = "string"
+
+[[column]]
+name = "charge_discounted_cash"
+from = "charge.discounted_cash"
+type = "string"
+
+[[column]]
+name = "charge_minimum"
+from = "charge.minimum"
+type = "string"
+
+[[column]]
+name = "charge_maximum"
+from = "charge.maximum"
+type = "string"
+
+[[column]]
+name = "charge_notes"
+from = "charge.notes"
+type = "string"
+
+[[column]]
+name = "payer_name"
+from = "payer.name"
+type = "string"
+
+[[column]]
+name = "payer_plan"
+from = "payer.plan"
+type = "string"
+
+[[column]]
+name = "payer_dollar"
+from = "payer.dollar"
+type = "string"
+
+[[column]]
+name = "payer_percentage"
+from = "payer.percentage"
+type = "string"
+
+[[column]]
+name = "payer_algorithm"
+from = "payer.algorithm"
+type = "string"
+
+[[column]]
+name = "payer_methodology"
+from = "payer.methodology"
+type = "string"
+
+[[column]]
+name = "payer_estimated_amount"
+from = "payer.estimated_amount"
+type = "string"
+
+[[column]]
+name = "payer_median_amount"
+from = "payer.median_amount"
+type = "string"
+
+[[column]]
+name = "payer_percentile_10th"
+from = "payer.percentile_10th"
+type = "string"
+
+[[column]]
+name = "payer_percentile_90th"
+from = "payer.percentile_90th"
+type = "string"
+
+[[column]]
+name = "payer_count"
+from = "payer.count"
+type = "string"
+
+[[column]]
+name = "payer_notes"
+from = "payer.notes"
+type = "string"

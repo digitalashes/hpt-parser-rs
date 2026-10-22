@@ -23,3 +23,12 @@ allow_attributes_without_reason = "warn"
 
 [dev-dependencies]
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"], optional = true }
+toml = { version = "1.1.8", optional = true }
+
+[features]
+default = ["config"]
+# The TOML output config with its transforms and casts.
+config = ["dep:toml", "dep:serde"]
