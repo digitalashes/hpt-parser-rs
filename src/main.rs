@@ -8,7 +8,7 @@ use serde_json::json;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fmt::Write as _;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -146,7 +146,11 @@ fn parse(mut args: impl Iterator<Item = OsString>) -> Result<Args, String> {
     let output = output.unwrap_or_else(|| {
         if stdin { "out.parquet".into() } else { Path::new(&input).with_extension("parquet") }
     });
-    if output == input {
+    // The same file under another spelling would be truncated before it is read.
+    if !stdin
+        && let (Ok(a), Ok(b)) = (fs::canonicalize(&input), fs::canonicalize(&output))
+        && a == b
+    {
         return Err("the output would overwrite the input, give another --output".into());
     }
     Ok(Args { input, format, output, config, flags, metadata, notify })

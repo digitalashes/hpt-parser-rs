@@ -57,6 +57,17 @@ fn usage() {
 }
 
 #[test]
+fn output_is_input() {
+    let dir = dir("cli-output-is-input");
+    let input = dir.join("t.csv");
+    fs::copy(TALL, &input).unwrap();
+    let again = dir.join("..").join("cli-output-is-input").join("t.csv");
+    let out = hpt_parser(&[input.to_str().unwrap(), "-o", again.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(fs::read(&input).unwrap(), fs::read(TALL).unwrap());
+}
+
+#[test]
 fn parquet() {
     let out = dir("cli-parquet").join("tall.parquet");
     let run = hpt_parser(&[TALL, "-o", out.to_str().unwrap()]);
