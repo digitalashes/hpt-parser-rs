@@ -85,13 +85,16 @@ module; its functions are `<name>.<function>`. Sandboxed: no files, network or W
 | Hook | Config | Gets | Answers |
 |---|---|---|---|
 | value transform | `transform = [{ plugin = "p.f" }]` | `{"values":[..]}` | `{"values":[..]}` |
-| computed column | `plugin = "p.f"` in place of `from` | `{"records":[..]}` | `{"values":[..]}` |
-| filter | `[[filter]] plugin = "p.f"` | `{"records":[..]}` | `{"keep":[bool]}` |
+| computed column | `plugin = "p.f"` (and `fields`) in place of `from` | `{"records":[..]}` | `{"values":[..]}` |
+| filter | `[[filter]] plugin = "p.f"` (and `fields`) | `{"records":[..]}` | `{"keep":[bool]}` |
 | metadata | `[[metadata]] plugin = "p.f"` | the metadata object | `{"fields":{..}}` |
 
 - Up to 8192 items a call; the answer has exactly one item per input, in order.
 - A record is flat, keyed by field name (`"charge.setting"`), only the fields with a
-  value, no `metadata.*`. Codes are `[{"code":..,"type":..}]`.
+  value. Codes are `[{"code":..,"type":..}]`.
+- Always set `fields = ["charge.setting", ...]` to what the function reads (`metadata.*`
+  allowed): without it every `charge.*`/`payer.*` field goes, long notes included, and
+  the JSON makes a run about 4x slower.
 - Deserialize into typed structs with only the fields you read: a generic JSON value
   per record costs several times more.
 - `[[metadata]]` runs once at the end; its fields go to `extra` in the last footer.

@@ -101,6 +101,18 @@ plugin = \"t.add_fields\""
     );
 }
 
+/// A hook gets only its `fields`: without `payer.name`, `region` sees no payer.
+#[test]
+fn fields() {
+    let path = out("plugin-fields");
+    let toml = config(
+        "[[column]]\nname = \"region\"\nplugin = \"t.region\"\nfields = [\"charge.setting\"]
+type = \"string\"\n[[filter]]\nplugin = \"t.keep_inpatient\"\nfields = \"charge.setting\"",
+    );
+    assert_eq!(run(&csv(5), &toml, &path).unwrap().records, 3);
+    assert_eq!(rows(&path), ["{region: null}"; 3]);
+}
+
 #[test]
 fn batches_keep_order() {
     let path = out("plugin-batches");

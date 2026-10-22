@@ -231,10 +231,12 @@ transform = ["trim", { plugin = "acme.normalize" }]   # a value transform
 [[column]]
 name = "region"
 plugin = "acme.region"        # a computed column
+fields = ["payer.name"]       # what each record holds; without it, every record field
 type = "string"
 
 [[filter]]
 plugin = "acme.keep"          # keeps or drops records
+fields = ["charge.setting"]
 
 [[metadata]]
 plugin = "acme.source"        # adds fields to the metadata
@@ -249,21 +251,24 @@ plugin = "acme.source"        # adds fields to the metadata
 
 - Calls are batched, up to 8192 records or values each, and an answer has one item per
   input, in order.
-- A record is flat, keyed by field name, with the fields that have a value:
+- A record is flat, keyed by field name, with the hook's `fields` that have a value:
   `{"charge.description":"MRI brain","charge.codes":[{"code":"70551","type":"CPT"}],"payer.name":"Acme",...}`.
-  `metadata.*` fields are not in it.
+  Without `fields` it holds every `charge.*` and `payer.*` field and `record.position`;
+  `metadata.*` fields are in it only when `fields` names them.
 - A value is a string, a list of strings, the codes as above, or null. An answer's
   strings, lists and numbers go on through the rest of the transforms and the cast.
 - The `[[metadata]]` hooks run once after the last record; their fields go to `extra`
   in the last file's footer.
 - A plugin that fails, or answers in the wrong shape or with the wrong number of items,
   stops the run (exit 1).
-- The JSON costs time: on the 2.5 GB file above, a filter over every record and a
-  computed column took the run from 7.6 to 18 seconds. Read only the fields you use
-  (typed structs, not a generic JSON value: that took 43 seconds).
+- The JSON costs time. On the 2.5 GB file above, a filter over every record and a
+  computed column take the run from 7.6 to 19 seconds with every field, and to 4.6
+  seconds with `fields` naming the one each reads (the filter keeps 8% of the records,
+  so fewer rows are written). In the plugin, read the fields into typed structs, not a
+  generic JSON value: that took 43 seconds.
 
-A filter in Rust, with `extism-pdk` and `serde` (derive) as dependencies and
-`crate-type = ["cdylib"]`:
+A filter in Rust, for `[[filter]]` with `fields = ["charge.setting"]`, with `extism-pdk`
+and `serde` (derive) as dependencies and `crate-type = ["cdylib"]`:
 
 ```rust,ignore
 use extism_pdk::{FnResult, Json, plugin_fn};

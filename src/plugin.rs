@@ -69,7 +69,7 @@ impl Plugins {
 fn functions(config: &Config) -> impl Iterator<Item = &str> {
     let columns = config.columns.iter().flat_map(|c| {
         let source = match &c.source {
-            Source::Plugin(f) => Some(f.as_str()),
+            Source::Plugin(h) => Some(h.plugin.as_str()),
             Source::Fields(_) => None,
         };
         let transforms = c.transforms.iter().filter_map(|t| match t {
@@ -78,5 +78,6 @@ fn functions(config: &Config) -> impl Iterator<Item = &str> {
         });
         source.into_iter().chain(transforms)
     });
-    columns.chain(config.filters.iter().chain(&config.metadata).map(|h| h.plugin.as_str()))
+    let filters = config.filters.iter().map(|h| h.plugin.as_str());
+    columns.chain(filters).chain(config.metadata.iter().map(String::as_str))
 }

@@ -218,7 +218,7 @@ pub fn write<R: Read>(
             if first.is_none() {
                 first = Some((record.clone(), metadata.clone()));
             }
-            config.filter(&mut batch, call)?;
+            config.filter(&mut batch, metadata, call)?;
             // Columns with plugins for the whole batch, the others record by record: a
             // column at a time over 8192 records misses the cache (chi: 8.2 s became 11.7 s).
             let mut batched = Vec::with_capacity(config.columns.len());
@@ -236,12 +236,12 @@ pub fn write<R: Read>(
         }
     }
     let mut metadata = Cow::Borrowed(parser.metadata());
-    for hook in &config.metadata {
+    for function in &config.metadata {
         let input = serde_json::to_vec(&*metadata).expect("strings, lists and maps of them");
         let Some(serde_json::Value::Object(fields)) =
-            call(&hook.plugin, &input)?.get_mut("fields").map(serde_json::Value::take)
+            call(function, &input)?.get_mut("fields").map(serde_json::Value::take)
         else {
-            return Err(plugin_error(&hook.plugin, "the answer has no `fields` object".into()));
+            return Err(plugin_error(function, "the answer has no `fields` object".into()));
         };
         for (key, value) in fields {
             let value = value.as_str().map_or_else(|| value.to_string(), String::from);

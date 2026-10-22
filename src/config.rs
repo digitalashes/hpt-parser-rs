@@ -26,7 +26,8 @@
 //! (relative to the config file); their functions are named `<name>.<function>` and get
 //! JSON, a batch of records or values at a time. A column computed by a plugin has
 //! `plugin = "name.function"` in place of `from`; `[[filter]]` and `[[metadata]]` take a
-//! `plugin` too, to keep or drop records and to add fields to the file's metadata.
+//! `plugin` too, to keep or drop records and to add fields to the file's metadata. A plugin
+//! column and a filter may name the `fields` each record carries to the plugin.
 //!
 //! `[aliases.csv]` and `[aliases.json]` name the non-standard names a file of that format
 //! may use for a CMS name: `"standard_charge | gross" = ["gross_charges"]` (see
@@ -56,8 +57,9 @@ pub struct Config {
     pub columns: Vec<Column>,
     /// `[[filter]]`.
     pub filters: Vec<Hook>,
-    /// `[[metadata]]`.
-    pub metadata: Vec<Hook>,
+    /// `[[metadata]]`: plugin functions, `<plugin>.<function>`, that add fields to the file's
+    /// metadata once the last record is read.
+    pub metadata: Vec<String>,
 }
 
 /// `[output]`: kept as written, read by the writer.
@@ -97,13 +99,15 @@ pub struct Plugin {
     pub config: BTreeMap<String, toml::Value>,
 }
 
-/// `[[filter]]`, a plugin function that keeps or drops each record, or `[[metadata]]`, one
-/// that adds fields to the file's metadata once the last record is read.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A plugin function that gets records: `[[filter]]`, which keeps or drops each one, or the
+/// `plugin` of a column, which computes its value.
+#[derive(Clone, Debug)]
 pub struct Hook {
     /// `<plugin>.<function>`.
     pub plugin: String,
+    /// `fields`: what each record holds. Without it, every `charge.*` and `payer.*` field
+    /// and `record.position`.
+    pub fields: Vec<Field>,
 }
 
 /// `[[column]]`: one output column.
@@ -124,8 +128,8 @@ pub struct Column {
 pub enum Source {
     /// `from`: one field, or several whose texts are joined by `|`.
     Fields(Vec<Field>),
-    /// A plugin function computes the value.
-    Plugin(String),
+    /// `plugin` (and `fields`): a plugin function computes the value.
+    Plugin(Hook),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -231,9 +235,9 @@ struct Raw {
     #[serde(default)]
     column: Vec<RawColumn>,
     #[serde(default)]
-    filter: Vec<Hook>,
+    filter: Vec<RawHook>,
     #[serde(default)]
-    metadata: Vec<Hook>,
+    metadata: Vec<RawMetadata>,
 }
 
 #[derive(Deserialize)]
@@ -242,9 +246,25 @@ struct RawColumn {
     name: String,
     from: Option<Names>,
     plugin: Option<String>,
+    fields: Option<Names>,
     r#type: Type,
     #[serde(default)]
     transform: Vec<toml::Value>,
+}
+
+/// `[[filter]]`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHook {
+    plugin: String,
+    fields: Option<Names>,
+}
+
+/// `[[metadata]]`: the plugin gets the metadata, so no `fields`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMetadata {
+    plugin: String,
 }
 
 #[derive(Deserialize)]
@@ -287,20 +307,22 @@ impl Config {
             let column = column(c, &raw.plugin);
             columns.push(column.map_err(|e| error(format!("column `{name}`: {e}")))?);
         }
-        for (table, hooks) in [("filter", &raw.filter), ("metadata", &raw.metadata)] {
-            for h in hooks {
-                plugin_function(&h.plugin, &raw.plugin)
-                    .map_err(|e| error(format!("{table}: {e}")))?;
-            }
-        }
+        let filters = (raw.filter.into_iter())
+            .map(|h| hook(&h.plugin, h.fields, &raw.plugin))
+            .collect::<Result<_, _>>()
+            .map_err(|e| error(format!("filter: {e}")))?;
+        let metadata = (raw.metadata.iter())
+            .map(|m| plugin_function(&m.plugin, &raw.plugin))
+            .collect::<Result<_, _>>()
+            .map_err(|e| error(format!("metadata: {e}")))?;
         check_aliases(&raw.aliases).map_err(error)?;
         Ok(Config {
             output: raw.output,
             aliases: raw.aliases,
             plugins: raw.plugin,
             columns,
-            filters: raw.filter,
-            metadata: raw.metadata,
+            filters,
+            metadata,
         })
     }
 
@@ -354,25 +376,40 @@ fn check_aliases(aliases: &Aliases) -> Result<(), String> {
 
 fn column(c: RawColumn, plugins: &[Plugin]) -> Result<Column, String> {
     let source = match (c.from, &c.plugin) {
-        (Some(from), None) => {
-            let names = match from {
-                Names::One(name) => vec![name],
-                Names::Many(names) => names,
-            };
-            if names.is_empty() {
-                return Err("`from` names no field".into());
-            }
-            let fields = names
-                .iter()
-                .map(|name| Field::parse(name).ok_or_else(|| format!("unknown field `{name}`")));
-            Source::Fields(fields.collect::<Result<_, _>>()?)
+        (Some(_), None) if c.fields.is_some() => {
+            return Err("`fields` is for a plugin column".into());
         }
-        (None, Some(plugin)) => Source::Plugin(plugin_function(plugin, plugins)?),
+        (Some(from), None) => Source::Fields(fields("from", from)?),
+        (None, Some(plugin)) => Source::Plugin(hook(plugin, c.fields, plugins)?),
         _ => return Err("needs one of `from` and `plugin`".into()),
     };
     let transforms = c.transform.iter().map(|t| transform(t, plugins));
     let transforms = transforms.collect::<Result<_, _>>()?;
     Ok(Column { name: c.name, source, kind: c.r#type, transforms })
+}
+
+/// The fields `key` names: one, or a list of at least one.
+fn fields(key: &str, names: Names) -> Result<Vec<Field>, String> {
+    let names = match names {
+        Names::One(name) => vec![name],
+        Names::Many(names) => names,
+    };
+    if names.is_empty() {
+        return Err(format!("`{key}` names no field"));
+    }
+    let fields = names
+        .iter()
+        .map(|name| Field::parse(name).ok_or_else(|| format!("unknown field `{name}`")));
+    fields.collect()
+}
+
+/// A plugin function, the plugin declared, with the `fields` its records hold.
+fn hook(plugin: &str, fields: Option<Names>, plugins: &[Plugin]) -> Result<Hook, String> {
+    let fields = match fields {
+        Some(names) => self::fields("fields", names)?,
+        None => Field::records(),
+    };
+    Ok(Hook { plugin: plugin_function(plugin, plugins)?, fields })
 }
 
 /// `<plugin>.<function>`, the plugin declared.
@@ -525,6 +562,12 @@ impl Field {
         FIELDS.iter().map(|(name, _)| *name)
     }
 
+    /// Every `charge.*` and `payer.*` field and `record.position`.
+    fn records() -> Vec<Self> {
+        let records = (0..FIELDS.len()).filter(|&i| !FIELDS[i].0.starts_with("metadata."));
+        records.map(|i| Field(Name::Known(i))).collect()
+    }
+
     fn get<'a>(&self, record: &'a Record, metadata: &'a Metadata) -> Work<'a> {
         match &self.0 {
             Name::Known(i) => (FIELDS[*i].1)(record, metadata),
@@ -588,7 +631,8 @@ fn read<'a>(fields: &[Field], record: &'a Record, metadata: &'a Metadata) -> Wor
 #[cfg(feature = "parquet")]
 mod batch {
     use super::CodeJson;
-    use super::{Column, Config, FIELDS, Source, Transform, Value, Work, apply, cast, read};
+    use super::{Column, Config, FIELDS, Field, Name, Source, Transform, Value, Work};
+    use super::{apply, cast, read};
     use crate::{Error, Metadata, Record};
     use serde::ser::{Serialize, SerializeMap, Serializer};
     use std::borrow::Cow;
@@ -612,8 +656,9 @@ mod batch {
                 Source::Fields(fields) => {
                     records.iter().map(|r| read(fields, r, metadata)).collect()
                 }
-                Source::Plugin(f) => {
-                    plugin_values(f, call(f, &records_json(records))?, records.len())?
+                Source::Plugin(h) => {
+                    let input = records_json(records, &h.fields, metadata);
+                    plugin_values(&h.plugin, call(&h.plugin, &input)?, records.len())?
                 }
             };
             for t in &self.transforms {
@@ -642,18 +687,15 @@ mod batch {
         pub(crate) fn filter(
             &self,
             records: &mut Vec<Record>,
+            metadata: &Metadata,
             call: &mut Call<'_>,
         ) -> Result<(), Error> {
             for f in &self.filters {
                 if records.is_empty() {
                     break;
                 }
-                let keep = answer(
-                    &f.plugin,
-                    call(&f.plugin, &records_json(records))?,
-                    "keep",
-                    records.len(),
-                )?;
+                let input = records_json(records, &f.fields, metadata);
+                let keep = answer(&f.plugin, call(&f.plugin, &input)?, "keep", records.len())?;
                 let keep: Vec<bool> = (keep.iter())
                     .map(|k| {
                         k.as_bool().ok_or_else(|| {
@@ -697,30 +739,47 @@ mod batch {
         Ok(answer(function, values, "values", n)?.into_iter().map(json_work).collect())
     }
 
-    /// `{"records":[..]}`: each record flat, keyed by the `charge.*`, `payer.*` and
-    /// `record.position` field names, absent values left out.
-    fn records_json(records: &[Record]) -> Vec<u8> {
+    /// `{"records":[..]}`: each record flat, keyed by the names of `fields`, absent values
+    /// left out.
+    pub(super) fn records_json(
+        records: &[Record],
+        fields: &[Field],
+        metadata: &Metadata,
+    ) -> Vec<u8> {
         #[derive(serde::Serialize)]
         struct Records<'a> {
             records: Vec<Flat<'a>>,
         }
-        let records = Records { records: records.iter().map(Flat).collect() };
-        serde_json::to_vec(&records).expect("text, lists and codes always serialize")
+        let records = records.iter().map(|record| Flat { record, fields, metadata }).collect();
+        serde_json::to_vec(&Records { records }).expect("text, lists and codes always serialize")
     }
 
-    struct Flat<'a>(&'a Record);
+    struct Flat<'a> {
+        record: &'a Record,
+        fields: &'a [Field],
+        metadata: &'a Metadata,
+    }
 
     impl Serialize for Flat<'_> {
         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-            let none = Metadata::default();
             let mut map = s.serialize_map(None)?;
-            for (name, get) in FIELDS.iter().filter(|(name, _)| !name.starts_with("metadata.")) {
-                let work = get(self.0, &none);
+            for field in self.fields {
+                let work = field.get(self.record, self.metadata);
                 if !matches!(work, Work::Null) {
-                    map.serialize_entry(name, &work)?;
+                    map.serialize_entry(field, &work)?;
                 }
             }
             map.end()
+        }
+    }
+
+    /// The field's name.
+    impl Serialize for Field {
+        fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            match &self.0 {
+                Name::Known(i) => s.serialize_str(FIELDS[*i].0),
+                Name::Extra(_) => s.collect_str(&format_args!("{self:?}")),
+            }
         }
     }
 
@@ -1168,6 +1227,23 @@ mod tests {
             message("[[filter]]\nplugin = \"q.keep\""),
             "filter: plugin `q` is not declared in a [[plugin]] table"
         );
+        let plugin = "[[plugin]]\nname = \"p\"\npath = \"p.wasm\"\n";
+        assert_eq!(
+            message(&format!("{plugin}[[filter]]\nplugin = \"p.keep\"\nfields = \"payer.nam\"")),
+            "filter: unknown field `payer.nam`"
+        );
+        assert_eq!(
+            col("from = \"payer.name\"\nfields = [\"payer.name\"]\ntype = \"string\""),
+            "column `c`: `fields` is for a plugin column"
+        );
+        assert_eq!(
+            message(&format!(
+                "{plugin}[[column]]\nname = \"c\"\nplugin = \"p.f\"\nfields = []\ntype = \"string\""
+            )),
+            "column `c`: `fields` names no field"
+        );
+        let metadata = message(&format!("{plugin}[[metadata]]\nplugin = \"p.m\"\nfields = []"));
+        assert!(metadata.contains("unknown field `fields`"), "{metadata}");
         assert_eq!(
             message("[aliases.json]\nmodifiers = [\"m\"]"),
             "aliases.json: `modifiers` is not a name the parser reads"
@@ -1188,7 +1264,7 @@ mod tests {
         let sources: Vec<String> = (config.columns.iter())
             .map(|c| match &c.source {
                 Source::Fields(f) => format!("{:?}", f[0]),
-                Source::Plugin(p) => p.clone(),
+                Source::Plugin(h) => h.plugin.clone(),
             })
             .collect();
         let expected: Vec<&str> = Field::names()
@@ -1198,6 +1274,35 @@ mod tests {
         for (c, source) in config.columns.iter().zip(&sources) {
             assert_eq!(c.name, source.replace('.', "_"));
         }
+    }
+
+    /// A plugin's records hold the hook's `fields`, `metadata.*` too; by default the record
+    /// fields that have a value.
+    #[cfg(feature = "parquet")]
+    #[test]
+    fn plugin_records() {
+        let config = Config::parse(
+            "[[plugin]]\nname = \"p\"\npath = \"p.wasm\"\n[[filter]]\nplugin = \"p.all\"
+[[filter]]\nplugin = \"p.some\"
+fields = [\"payer.dollar\", \"payer.name\", \"metadata.hospital_name\", \"metadata.extra.k\"]",
+        )
+        .unwrap();
+        let metadata = Metadata {
+            hospital_name: Some("H".into()),
+            extra: [("k".into(), "v".into())].into(),
+            ..Metadata::default()
+        };
+        let json = |h: &Hook| {
+            String::from_utf8(batch::records_json(&[record("1")], &h.fields, &metadata)).unwrap()
+        };
+        assert_eq!(
+            json(&config.filters[0]),
+            r#"{"records":[{"charge.codes":[{"code":"99213","type":"cpt"},{"code":"0450","type":"RC"},{"code":"X1","type":null}],"charge.setting":"1","charge.modifiers":["50","LT"],"payer.dollar":"1","record.position":"7"}]}"#
+        );
+        assert_eq!(
+            json(&config.filters[1]),
+            r#"{"records":[{"payer.dollar":"1","metadata.hospital_name":"H","metadata.extra.k":"v"}]}"#
+        );
     }
 
     /// The README's Fields table names every field, in its group's row.
