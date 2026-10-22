@@ -1,0 +1,56 @@
+name: Release
+
+# Pushing a tag such as v0.1.0 creates its release and attaches a binary per platform. Run
+# by hand (Actions > Release > Run workflow) it only builds the binaries: a dry run.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  TAG: ${{ github.ref_name }}
+
+jobs:
+  release:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes ""
+
+  binary:
+    needs: release
+    if: ${{ !failure() && !cancelled() }}
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      # zstd is C, built by cc, which takes musl-gcc for the musl targets.
+      - if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: |
+          name="hpt-parser-$TAG-${{ matrix.target }}"
+          mkdir "$name"
+          cp -r README.md LICENSE skills target/${{ matrix.target }}/release/hpt-parser* "$name/"
+          rm -f "$name"/*.d "$name"/*.pdb
+          if [ "$RUNNER_OS" = Windows ]; then 7z a "$name.zip" "$name" >/dev/null; file="$name.zip"
+          else tar czf "$name.tar.gz" "$name"; file="$name.tar.gz"; fi
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            gh release upload "$TAG" "$file" --repo "$GITHUB_REPOSITORY"
+          fi

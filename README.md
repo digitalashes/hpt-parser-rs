@@ -14,7 +14,7 @@ flat shape: one record per charge item and payer/plan.
   payer/plan block, a JSON standard charge is one record per payer. The file's header
   (hospital, version, attestation, ...) is kept apart, as `Metadata`.
 - **Streaming.** Records come out as the file is read, so memory stays flat: a 2.5 GB
-  wide CSV file (2.2 million records) becomes Parquet in 9 seconds with 68 MB of resident
+  wide CSV file (2.2 million records) becomes Parquet in 8 seconds with 52 MB of resident
   memory on a 2019 laptop (Intel i7-9750H).
 - **Lenient.** Hospital files are messy. A value is kept as the text in the file, and a
   value that does not parse never fails the run. Only a file that cannot be read at all
@@ -30,11 +30,15 @@ It does not validate. To check that a file follows the data dictionary, use
 
 ## Install
 
+Download a binary for macOS, Linux or Windows from the
+[releases](https://github.com/digitalashes/hpt-parser-rs/releases), or build one (Rust 1.96
+or later):
+
 ```sh
-cargo install --git https://github.com/digitalashes/hpt-parser-rs
+cargo install hpt-parser
 ```
 
-The binary is `hpt-parser`. It needs Rust 1.96 or later.
+The binary is `hpt-parser`.
 
 ## Command line
 
@@ -329,7 +333,7 @@ footer is complete.
 
 ```toml
 [dependencies]
-hpt-parser = { git = "https://github.com/digitalashes/hpt-parser-rs" }
+hpt-parser = "0.1"
 ```
 
 `Parser` reads any `std::io::Read` (a file, stdin, a decompressor) and is an iterator of
@@ -389,11 +393,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `plugins` | yes     | WASM plugins in the config (`extism`, on wasmtime). |
 
 Without default features the parser has no dependencies:
-`hpt-parser = { git = "...", default-features = false }`.
-
-## Roadmap
-
-- A release on crates.io, and binaries.
+`hpt-parser = { version = "0.1", default-features = false }`.
 
 ## License
 
