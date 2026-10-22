@@ -181,16 +181,14 @@ fn run(args: &Args) -> Result<(), Box<dyn Error>> {
     let result = open(args, &config).and_then(|parser| {
         let chunk_ready = |c: &hpt_parser::parquet::Chunk| {
             let path = c.path.display().to_string();
-            notify.send(
-                "chunk_ready",
-                &json!({"path": path, "index": c.index, "records": c.records}),
-            );
+            let event = json!({"event": "chunk_ready", "path": path, "index": c.index, "records": c.records});
+            notify.send(&event);
         };
         Ok(write(parser, &config, &output, chunk_ready)?)
     });
-    let summary =
-        result.inspect_err(|e| notify.send("error", &json!({"message": e.to_string()})))?;
-    notify.send("done", &json!({"chunks": summary.chunks, "records": summary.records}));
+    let summary = result
+        .inspect_err(|e| notify.send(&json!({"event": "error", "message": e.to_string()})))?;
+    notify.send(&json!({"event": "done", "chunks": summary.chunks, "records": summary.records}));
     eprintln!("{} chunks, {} records", summary.chunks, summary.records);
     if summary.late_metadata {
         eprintln!(
@@ -272,12 +270,10 @@ impl Notify {
         Ok(Notify(Some(socket)))
     }
 
-    /// `{"event":"<event>",<fields>}`, the event first for whoever reads the lines. A failed
-    /// write drops the socket: one warning, and parsing goes on.
-    fn send(&mut self, event: &str, fields: &serde_json::Value) {
-        let line = format!("{{\"event\":\"{event}\",{}\n", &fields.to_string()[1..]);
+    /// A failed write drops the socket: one warning, and parsing goes on.
+    fn send(&mut self, event: &serde_json::Value) {
         if let Some(socket) = &mut self.0
-            && let Err(e) = socket.write_all(line.as_bytes())
+            && let Err(e) = socket.write_all(format!("{event}\n").as_bytes())
         {
             eprintln!("warning: --notify-socket: {e}; no more events are sent");
             self.0 = None;

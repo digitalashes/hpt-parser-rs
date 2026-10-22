@@ -33,7 +33,7 @@ serde_json = { version = "1.0.154", features = ["preserve_order"] }
 bytes = { version = "1.12.1", default-features = false, optional = true }
 parquet = { version = "60.0.0", default-features = false, features = ["snap", "flate2-zlib-rs", "lz4", "zstd", "brotli"], optional = true }
 serde = { version = "1.0.229", features = ["derive"], optional = true }
-serde_json = { version = "1.0.154", optional = true }
+serde_json = { version = "1.0.154", optional = true, features = ["preserve_order"] }
 toml = { version = "1.1.8", optional = true }
 
 [features]
