@@ -122,11 +122,8 @@ plugin = \"t.keep_inpatient\""
 fn errors() {
     let column = |f: &str| format!("{DESCRIPTION}\ntransform = [{{ plugin = \"t.{f}\" }}]");
     assert_eq!(error(&column("nope")), "t.nope: the plugin has no such function");
-    assert!(
-        error(&column("fail")).contains("this function always fails"),
-        "{}",
-        error(&column("fail"))
-    );
+    let fail = error(&column("fail"));
+    assert!(fail.contains("this function always fails"), "{fail}");
     assert_eq!(error(&column("short")), "t.short: 2 items in `values` for 3 inputs");
     let missing = run(&csv(1), &config(&column("upper")).replace(WASM, "missing.wasm"), &out("p"));
     assert!(matches!(missing, Err(Error::Plugin { plugin, .. }) if plugin == "t"));
