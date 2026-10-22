@@ -81,12 +81,14 @@ pub(crate) const NAMES: &[&str] = &[
 pub struct Parser<R> {
     values: parse::Parser<R>,
     pub metadata: Metadata,
+    /// Counts the changes to `metadata`.
+    pub changes: u64,
 }
 
 impl<R: Read> Parser<R> {
     pub fn new(input: R) -> Self {
         let metadata = Metadata { layout: Some(Layout::Json), ..Metadata::default() };
-        Parser { values: parse::Parser::new(input, PATHS), metadata }
+        Parser { values: parse::Parser::new(input, PATHS), metadata, changes: 0 }
     }
 
     pub fn set_aliases(&mut self, aliases: Aliases) {
@@ -99,10 +101,14 @@ impl<R: Read> Parser<R> {
     // takes remembering which names came
     pub fn fill(&mut self, pending: &mut VecDeque<Record>) -> Result<bool, Error> {
         while let Some((key, value)) = self.values.next()? {
+            let aliases = self.metadata.aliases_used.len();
             self.metadata.aliases_used.append(self.values.aliases_used());
             match &key {
                 Key::Index(i) => item(&value, *i as u64, pending),
                 Key::Name(name) => header_field(&mut self.metadata, name, &value),
+            }
+            if matches!(key, Key::Name(_)) || self.metadata.aliases_used.len() > aliases {
+                self.changes += 1;
             }
             self.values.recycle(value);
             if matches!(key, Key::Index(_)) {

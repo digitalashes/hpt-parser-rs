@@ -206,6 +206,25 @@ A,99213,CPT,,Acme,PPO,1.5,7,yes,2026-01-02
     }
 
     #[test]
+    fn error_after_chunks() {
+        let config = columns(&[("s", "charge.description", "string")]);
+        // 40 kB each, so that the error comes in a later read than the first three.
+        let pad = "x".repeat(40_000);
+        let item = |d| format!(r#"{{"description":"{d}","x":"{pad}","standard_charges":[{{}}]}}"#);
+        let items = ["A", "B", "C", "D"].map(item).join(",");
+        let input = format!(r#"{{"standard_charge_information":[{items},}}"#);
+        let dir = dir("error");
+        let mut output = Output::new(dir.join("out.parquet"));
+        output.chunk_size = 1;
+        let mut chunks = Vec::new();
+        let parser = Parser::new(input.as_bytes(), Format::Json);
+        let written = write(parser, &config, &output, |c| chunks.push(c.index));
+        assert!(matches!(written, Err(Error::Json { .. })), "{written:?}");
+        assert_eq!(chunks, [1, 2]);
+        assert_eq!(rows(&dir.join("out-00002.parquet")), [r#"{s: "B"}"#]);
+    }
+
+    #[test]
     fn footer_metadata() {
         let config = columns(&[("s", "charge.description", "string")]);
         let path = dir("footer").join("out.parquet");

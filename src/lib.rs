@@ -375,6 +375,16 @@ impl<R: Read> Parser<R> {
             Inner::Json(p) => &p.metadata,
         }
     }
+
+    /// Grows whenever [`Parser::metadata`] changes, so that a caller can tell without
+    /// comparing it. A CSV header is read before the first record and never changes after.
+    #[cfg(feature = "parquet")]
+    pub(crate) fn metadata_changes(&self) -> u64 {
+        match &self.inner {
+            Inner::Csv(_) => 0,
+            Inner::Json(p) => p.changes,
+        }
+    }
 }
 
 impl<R: Read> Iterator for Parser<R> {

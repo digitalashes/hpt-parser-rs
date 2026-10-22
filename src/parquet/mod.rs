@@ -8,7 +8,7 @@
 mod group;
 
 use crate::config::{self, Call, Column, Config, Type, Value, plugin_error};
-use crate::{Error, Metadata, Parser};
+use crate::{Error, Metadata, Parser, Record};
 use ::parquet::basic::{
     BrotliLevel, Compression as Codec, ConvertedType, GzipLevel, LogicalType, Repetition,
     Type as Physical, ZstdLevel,
@@ -22,9 +22,11 @@ use std::borrow::Cow;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
+use std::{panic, thread};
 
-/// Records a plugin function gets in one call. A batch stays in the cache: 8192 took a
+/// Records read at a time: a plugin function gets a batch in one call, and without plugins
+/// a batch goes to the thread that makes rows. A batch stays in the cache: 8192 took a
 /// 2.5 GB file with plugins from 3.7 to 4.6 s and its peak memory from 39 to 57 MB (47 to
 /// 175 MB with every field in the plugin JSON).
 const BATCH: usize = 512;
@@ -163,7 +165,8 @@ struct Open {
 /// after the whole input is read), then `on_chunk` gets it. No records at all still give one
 /// file with zero rows.
 ///
-/// With a `[[filter]]` or a column with plugins, records are read in batches of 512: the
+/// Records are read in batches of 512. Without plugins, another thread makes the rows of
+/// each batch while the next one is read. With a `[[filter]]` or a column with plugins, the
 /// filters drop records from a batch (dropped records count for nothing), then each plugin
 /// function is called once for the batch. The `[[metadata]]` plugins run once after the last
 /// record, and the fields they add are in the last file's footer.
@@ -177,7 +180,7 @@ pub fn write<R: Read>(
     mut parser: Parser<R>,
     config: &Config,
     output: &Output,
-    on_chunk: impl FnMut(&Chunk),
+    mut on_chunk: impl FnMut(&Chunk),
 ) -> Result<Summary, Error> {
     let schema = schema(&config.columns)?;
     let properties =
@@ -191,7 +194,7 @@ pub fn write<R: Read>(
         group,
         file: None,
         summary: Summary::default(),
-        on_chunk,
+        closed: Vec::new(),
     };
     #[cfg(feature = "plugins")]
     let mut plugins = crate::plugin::Plugins::load(config)?;
@@ -206,17 +209,9 @@ pub fn write<R: Read>(
     #[cfg(not(feature = "plugins"))]
     let call: &mut Call = &mut |_, _| unreachable!("no plugins");
     let mut first = None;
-    // Without a filter or a column with plugins (`[[metadata]]` alone runs at the end),
-    // record by record: even a batch of one costs chi 6% (8.2 s, 8.7 s).
+    // Without a filter or a column with plugins (`[[metadata]]` alone runs at the end).
     if config.filters.is_empty() && !config.columns.iter().any(Column::has_plugins) {
-        while let Some(record) = parser.next() {
-            let record = record?;
-            let metadata = parser.metadata();
-            files.row(config.columns.iter().map(|c| c.value(&record, metadata)), metadata)?;
-            if first.is_none() {
-                first = Some((record, metadata.clone()));
-            }
-        }
+        rows(&mut parser, config, &mut files, &mut first, &mut on_chunk)?;
     } else {
         let mut batch = Vec::with_capacity(BATCH);
         loop {
@@ -237,13 +232,17 @@ pub fn write<R: Read>(
                 let values = c.has_plugins().then(|| c.values(&batch, metadata, call));
                 batched.push(values.transpose()?.map(Vec::into_iter));
             }
-            for record in &batch {
+            let written = batch.iter().try_for_each(|record| {
                 let values = config.columns.iter().zip(&mut batched).map(|(c, b)| match b {
                     Some(values) => values.next().expect("a value per record"),
                     None => c.value(record, metadata),
                 });
-                files.row(values, metadata)?;
+                files.row(values, metadata)
+            });
+            for c in files.closed.drain(..) {
+                on_chunk(&c);
             }
+            written?;
         }
     }
     let mut metadata = Cow::Borrowed(parser.metadata());
@@ -262,6 +261,9 @@ pub fn write<R: Read>(
         }
     }
     let mut summary = files.finish(&metadata)?;
+    for c in files.closed.drain(..) {
+        on_chunk(&c);
+    }
     if let Some((record, seen)) = first {
         summary.late_metadata =
             (config.columns.iter()).any(|c| c.value(&record, &seen) != c.value(&record, &metadata));
@@ -269,18 +271,90 @@ pub fn write<R: Read>(
     Ok(summary)
 }
 
+/// Reads the records in batches; a thread of its own makes their rows while the next batch
+/// is read. A batch ends early where the metadata changes, so that each row has the
+/// metadata its record was read with. The files the thread closes come back here for
+/// `on_chunk`. A parser error still has the records before it written first.
+fn rows<R: Read>(
+    parser: &mut Parser<R>,
+    config: &Config,
+    files: &mut Files<'_>,
+    first: &mut Option<(Record, Metadata)>,
+    on_chunk: &mut impl FnMut(&Chunk),
+) -> Result<(), Error> {
+    let (to_rows, batches) = mpsc::sync_channel::<(Vec<Record>, Arc<Metadata>)>(1);
+    let (to_caller, closed) = mpsc::channel();
+    thread::scope(|s| {
+        let writer = s.spawn(move || {
+            for (records, metadata) in batches {
+                let written = records.iter().try_for_each(|record| {
+                    files.row(config.columns.iter().map(|c| c.value(record, &metadata)), &metadata)
+                });
+                // The caller is gone only when it panicked.
+                for c in files.closed.drain(..) {
+                    _ = to_caller.send(c);
+                }
+                written?;
+            }
+            Ok(())
+        });
+        let mut batch = Vec::with_capacity(BATCH);
+        // The metadata the records in `batch` were read with, and the parser's count of
+        // changes to it then.
+        let mut seen: Option<(u64, Arc<Metadata>)> = None;
+        let read = loop {
+            let next = parser.next();
+            let changes = parser.metadata_changes();
+            let stale = seen.as_ref().is_some_and(|(n, _)| *n != changes);
+            if let Some((_, metadata)) = &seen
+                && !batch.is_empty()
+                && (stale || batch.len() == BATCH || !matches!(next, Some(Ok(_))))
+            {
+                let full = std::mem::replace(&mut batch, Vec::with_capacity(BATCH));
+                // Fails only when the writer stopped, on an error it returns below.
+                if to_rows.send((full, metadata.clone())).is_err() {
+                    break Ok(());
+                }
+                for c in closed.try_iter() {
+                    on_chunk(&c);
+                }
+            }
+            if seen.is_none() || stale {
+                seen = Some((changes, Arc::new(parser.metadata().clone())));
+            }
+            match next {
+                Some(Ok(record)) => {
+                    if first.is_none() {
+                        *first = Some((record.clone(), parser.metadata().clone()));
+                    }
+                    batch.push(record);
+                }
+                Some(Err(e)) => break Err(e),
+                None => break Ok(()),
+            }
+        };
+        drop(to_rows);
+        let written = writer.join().unwrap_or_else(|p| panic::resume_unwind(p));
+        for c in closed.try_iter() {
+            on_chunk(&c);
+        }
+        written.and(read)
+    })
+}
+
 /// The files closed so far and the one being written.
-struct Files<'o, F> {
+struct Files<'o> {
     output: &'o Output,
     schema: TypePtr,
     properties: Arc<WriterProperties>,
     group: Group,
     file: Option<Open>,
     summary: Summary,
-    on_chunk: F,
+    /// Files closed since the caller last took them.
+    closed: Vec<Chunk>,
 }
 
-impl<F: FnMut(&Chunk)> Files<'_, F> {
+impl Files<'_> {
     /// Adds a row, first closing the open file if it is full.
     fn row<'a>(
         &mut self,
@@ -318,12 +392,12 @@ impl<F: FnMut(&Chunk)> Files<'_, F> {
         f.writer.close()?;
         self.summary.chunks += 1;
         self.summary.records += f.chunk.records;
-        (self.on_chunk)(&f.chunk);
+        self.closed.push(f.chunk);
         Ok(())
     }
 
     /// Closes the open file, or writes one with no rows when there was no record.
-    fn finish(mut self, metadata: &Metadata) -> Result<Summary, Error> {
+    fn finish(&mut self, metadata: &Metadata) -> Result<Summary, Error> {
         let f = match self.file.take() {
             Some(f) => f,
             None => self.open()?,

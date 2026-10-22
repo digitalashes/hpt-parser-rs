@@ -14,7 +14,7 @@ flat shape: one record per charge item and payer/plan.
   payer/plan block, a JSON standard charge is one record per payer. The file's header
   (hospital, version, attestation, ...) is kept apart, as `Metadata`.
 - **Streaming.** Records come out as the file is read, so memory stays flat: a 2.5 GB
-  wide CSV file (2.2 million records) becomes Parquet in 5.3 seconds with 54 MB of resident
+  wide CSV file (2.2 million records) becomes Parquet in 4.5 seconds with 62 MB of resident
   memory on a 2019 laptop (Intel i7-9750H).
 - **Lenient.** Hospital files are messy. A value is kept as the text in the file, and a
   value that does not parse never fails the run. Only a file that cannot be read at all
@@ -269,7 +269,7 @@ plugin = "acme.source"        # adds fields to the metadata
 - A plugin that fails, or answers in the wrong shape or with the wrong number of items,
   stops the run (exit 1).
 - The JSON costs time. On the 2.5 GB file above, a filter over every record and a
-  computed column take the run from 5.3 to 13 seconds with every field, and to 3.5
+  computed column take the run from 4.5 to 13 seconds with every field, and to 3.5
   seconds with `fields` naming the one each reads (the filter keeps 8% of the records,
   so fewer rows are written). In the plugin, read the fields into typed structs, not a
   generic JSON value: that took more than twice as long.
