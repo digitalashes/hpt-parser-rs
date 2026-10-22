@@ -10,6 +10,11 @@ keywords = ["cms", "price-transparency", "healthcare", "hospital", "parser"]
 categories = ["parser-implementations"]
 include = ["/src", "/README.md", "/LICENSE"]
 
+[[bin]]
+name = "hpt-parser"
+path = "src/main.rs"
+required-features = ["parquet"]
+
 [lints.rust]
 unsafe_code = "forbid"
 
