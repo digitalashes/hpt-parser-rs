@@ -220,8 +220,8 @@ pub fn write<R: Read>(
                 first = Some((record.clone(), metadata.clone()));
             }
             config.filter(&mut batch, metadata, call)?;
-            // Columns with plugins for the whole batch, the others record by record: a
-            // column at a time over 8192 records missed the cache (chi: 8.2 s became 11.7 s).
+            // Columns with plugins for the whole batch, the others record by record: every
+            // column a batch at a time cost nyp 6% (1.73 s became 1.83 s).
             let mut batched = Vec::with_capacity(config.columns.len());
             for c in &config.columns {
                 let values = c.has_plugins().then(|| c.values(&batch, metadata, call));
