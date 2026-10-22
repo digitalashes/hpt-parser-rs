@@ -3,7 +3,8 @@
 //!
 //! [`Parser`] reads a file as a stream of flat [`Record`]s, one per charge item and
 //! payer/plan: a tall row is one record, a wide row one per payer/plan block with a value.
-//! A row without payer values is one record with `payer: None`. The file's header ([`Metadata`]) is kept apart from the records.
+//! A row without payer values is one record with `payer: None`. The file's header
+//! ([`Metadata`]) is kept apart from the records.
 //!
 //! Values are kept as the text in the file, trimmed; an empty cell is `None`. Nothing is
 //! checked or converted, so a sloppy value never fails the parse. An [`Error`] means the

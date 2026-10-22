@@ -21,6 +21,8 @@ pub struct Parser<R> {
     columns: Option<Columns>,
     /// The rest of a wide row's records.
     pending: VecDeque<Record>,
+    /// One entry per payer/plan block, `None` between rows.
+    payers: Vec<Option<Payer>>,
 }
 
 /// Where row 3 puts each field.
@@ -76,13 +78,11 @@ impl<R: Read> Parser<R> {
             metadata: Metadata::default(),
             columns: None,
             pending: VecDeque::new(),
+            payers: Vec::new(),
         }
     }
 
     pub fn next(&mut self) -> Option<Result<Record, Error>> {
-        if let Some(record) = self.pending.pop_front() {
-            return Some(Ok(record));
-        }
         if self.columns.is_none() {
             match self.header() {
                 Ok(columns) => self.columns = Some(columns),
@@ -91,23 +91,29 @@ impl<R: Read> Parser<R> {
         }
         let columns = self.columns.as_ref().expect("set above");
         loop {
+            if let Some(record) = self.pending.pop_front() {
+                return Some(Ok(record));
+            }
             let row = match self.reader.next_row() {
                 Ok(Some(row)) => row,
                 Ok(None) => return None,
                 Err(e) => return Some(Err(e.into())),
             };
             let position = row.line;
-            let Some((charge, payers)) = columns.record(row.non_empty()) else { continue };
+            let Some(charge) = columns.record(row.non_empty(), &mut self.payers) else {
+                continue;
+            };
             let charge = Arc::new(charge);
-            if payers.is_empty() {
-                return Some(Ok(Record { charge, payer: None, position }));
+            self.pending.extend(
+                self.payers.iter_mut().filter_map(Option::take).map(|payer| Record {
+                    charge: Arc::clone(&charge),
+                    payer: Some(payer),
+                    position,
+                }),
+            );
+            if self.pending.is_empty() {
+                self.pending.push_back(Record { charge, payer: None, position });
             }
-            self.pending.extend(payers.into_iter().map(|payer| Record {
-                charge: Arc::clone(&charge),
-                payer: Some(payer),
-                position,
-            }));
-            return self.pending.pop_front().map(Ok);
         }
     }
 
@@ -128,6 +134,7 @@ impl<R: Read> Parser<R> {
         let (columns, layout) =
             Columns::new(&row3).map_err(|message| Error::Csv { line, message: message.into() })?;
         self.metadata.layout = Some(layout);
+        self.payers = vec![None; columns.blocks.len()];
         Ok(columns)
     }
 
@@ -149,7 +156,7 @@ impl<R: Read> Parser<R> {
 
 /// One header field from row 1's `name` and row 2's `value`. Unknown names are ignored.
 fn header_field(m: &mut Metadata, name: &str, value: &str) {
-    let text = (!value.is_empty()).then(|| value.to_owned());
+    let text = non_empty(value);
     let key = key(name);
     match key.as_str() {
         "HOSPITAL_NAME" => m.hospital_name = text,
@@ -161,7 +168,7 @@ fn header_field(m: &mut Metadata, name: &str, value: &str) {
         "ATTESTER_NAME" => m.attester_name = text,
         _ if key.starts_with("LICENSE_NUMBER|") => {
             m.license_number = text;
-            m.license_state = parts(name).nth(1).filter(|s| !s.is_empty()).map(str::to_owned);
+            m.license_state = parts(name).nth(1).and_then(non_empty);
         }
         // The attestation (3.0.0) or affirmation (2.x) sentence is the column name itself.
         _ if key.starts_with("TO THE BEST OF ITS KNOWLEDGE") => {
@@ -179,18 +186,14 @@ impl Columns {
         let payer: Vec<_> = names.iter().map(|n| payer_column(n)).collect();
         let tall = [Kind::Name, Kind::Plan].iter().all(|k| payer.contains(&Some((*k, None))));
         let wide = payer.iter().any(|p| matches!(p, Some((_, Some(_)))));
-        let layout = match (tall, wide) {
-            (true, false) => Layout::Tall,
-            (false, true) => Layout::Wide,
-            (true, true) => {
-                return Err("row 3 has both payer_name and plan_name (tall) and \
-                    payer-specific columns (wide)");
-            }
-            (false, false) => {
-                return Err("row 3 has neither payer_name and plan_name (tall) nor \
-                    payer-specific columns (wide)");
-            }
-        };
+        if tall == wide {
+            return Err(if tall {
+                "row 3 has both payer_name and plan_name (tall) and payer-specific columns (wide)"
+            } else {
+                "row 3 has neither payer_name and plan_name (tall) nor payer-specific columns \
+                    (wide)"
+            });
+        }
         // Code numbers sort as numbers when they are written without leading zeros.
         let mut numbers: Vec<&str> =
             keys.iter().filter_map(|k| code_column(k)).map(|c| c.0).collect();
@@ -205,49 +208,52 @@ impl Columns {
         let mut seen = HashSet::new();
         let slots = (keys.iter().zip(payer))
             .map(|(k, payer)| {
-                let slot = match (k.as_str(), payer) {
-                    (_, Some((kind, None))) if tall => Slot::Payer(0, kind),
-                    (_, Some((kind, Some((name, plan))))) if wide => {
+                // A payer column of the other layout is not read.
+                let slot = match payer {
+                    Some((kind, None)) if tall => Slot::Payer(0, kind),
+                    Some((kind, Some((name, plan)))) => {
                         let key = format!("{name} | {plan}").to_lowercase();
                         let block = *block_index.entry(key).or_insert_with(|| {
-                            let text = |s: &str| (!s.is_empty()).then(|| s.to_owned());
-                            blocks.push((text(name), text(plan)));
+                            blocks.push((non_empty(name), non_empty(plan)));
                             blocks.len() - 1
                         });
                         Slot::Payer(block, kind)
                     }
-                    (_, Some(_)) => return None,
-                    ("DESCRIPTION", None) => Slot::Description,
-                    ("SETTING", None) => Slot::Setting,
-                    ("BILLING_CLASS", None) => Slot::BillingClass,
-                    ("DRUG_UNIT_OF_MEASUREMENT", None) => Slot::DrugUnit,
-                    ("DRUG_TYPE_OF_MEASUREMENT", None) => Slot::DrugUnitType,
-                    ("MODIFIERS", None) => Slot::Modifiers,
-                    ("STANDARD_CHARGE|GROSS", None) => Slot::Gross,
-                    ("STANDARD_CHARGE|DISCOUNTED_CASH", None) => Slot::DiscountedCash,
-                    ("STANDARD_CHARGE|MIN", None) => Slot::Minimum,
-                    ("STANDARD_CHARGE|MAX", None) => Slot::Maximum,
-                    ("ADDITIONAL_GENERIC_NOTES", None) => Slot::Notes,
-                    (k, None) => {
-                        let (n, is_type) = code_column(k)?;
-                        let i = numbers.iter().position(|m| *m == n).expect("collected above");
-                        if is_type { Slot::CodeType(i) } else { Slot::Code(i) }
-                    }
+                    Some(_) => return None,
+                    None => match k.as_str() {
+                        "DESCRIPTION" => Slot::Description,
+                        "SETTING" => Slot::Setting,
+                        "BILLING_CLASS" => Slot::BillingClass,
+                        "DRUG_UNIT_OF_MEASUREMENT" => Slot::DrugUnit,
+                        "DRUG_TYPE_OF_MEASUREMENT" => Slot::DrugUnitType,
+                        "MODIFIERS" => Slot::Modifiers,
+                        "STANDARD_CHARGE|GROSS" => Slot::Gross,
+                        "STANDARD_CHARGE|DISCOUNTED_CASH" => Slot::DiscountedCash,
+                        "STANDARD_CHARGE|MIN" => Slot::Minimum,
+                        "STANDARD_CHARGE|MAX" => Slot::Maximum,
+                        "ADDITIONAL_GENERIC_NOTES" => Slot::Notes,
+                        k => {
+                            let (n, is_type) = code_column(k)?;
+                            let i = numbers.iter().position(|m| *m == n).expect("collected");
+                            if is_type { Slot::CodeType(i) } else { Slot::Code(i) }
+                        }
+                    },
                 };
                 seen.insert(slot).then_some(slot)
             })
             .collect();
+        let layout = if tall { Layout::Tall } else { Layout::Wide };
         Ok((Columns { slots, codes: numbers.len(), blocks }, layout))
     }
 
-    /// A data row's charge and the payers of its blocks with a value, in block order, or
-    /// `None` for a blank row.
+    /// A data row's charge, or `None` for a blank row. The payers of blocks with a value go
+    /// into `payers` by block.
     fn record<'a>(
         &self,
         cells: impl Iterator<Item = (usize, &'a str)>,
-    ) -> Option<(Charge, Vec<Payer>)> {
+        payers: &mut [Option<Payer>],
+    ) -> Option<Charge> {
         let mut charge = Charge::default();
-        let mut payers: Vec<Option<Payer>> = vec![None; self.blocks.len()];
         let mut codes: Vec<(Option<String>, Option<String>)> = vec![(None, None); self.codes];
         let mut blank = true;
         for (i, cell) in cells {
@@ -301,7 +307,7 @@ impl Columns {
         charge.codes = (codes.into_iter())
             .filter_map(|(code, code_type)| Some(Code { code: code?, code_type }))
             .collect();
-        Some((charge, payers.into_iter().flatten().collect()))
+        Some(charge)
     }
 }
 
@@ -310,16 +316,15 @@ impl Columns {
 /// `standard_charge | <payer> | <plan> | negotiated_dollar` or `count | <payer> | <plan>`
 /// in a wide one.
 fn payer_column(name: &str) -> Option<(Kind, Option<(&str, &str)>)> {
-    let parts: Vec<&str> = parts(name).collect();
-    let upper: Vec<String> = parts.iter().map(|p| p.to_uppercase()).collect();
-    let charge = |s: &str| match s {
+    let up = |s: &str| s.to_uppercase();
+    let charge = |s: &str| match up(s).as_str() {
         "NEGOTIATED_DOLLAR" => Some(Kind::Dollar),
         "NEGOTIATED_PERCENTAGE" => Some(Kind::Percentage),
         "NEGOTIATED_ALGORITHM" => Some(Kind::Algorithm),
         "METHODOLOGY" => Some(Kind::Methodology),
         _ => None,
     };
-    let amount = |s: &str| match s {
+    let amount = |s: &str| match up(s).as_str() {
         "ADDITIONAL_PAYER_NOTES" => Some(Kind::Notes),
         "ESTIMATED_AMOUNT" => Some(Kind::EstimatedAmount),
         "MEDIAN_AMOUNT" => Some(Kind::MedianAmount),
@@ -328,16 +333,17 @@ fn payer_column(name: &str) -> Option<(Kind, Option<(&str, &str)>)> {
         "COUNT" => Some(Kind::Count),
         _ => None,
     };
-    let upper: Vec<&str> = upper.iter().map(String::as_str).collect();
-    match (&upper[..], &parts[..]) {
-        (["PAYER_NAME"], _) => Some((Kind::Name, None)),
-        (["PLAN_NAME"], _) => Some((Kind::Plan, None)),
-        (["STANDARD_CHARGE", c], _) => Some((charge(c)?, None)),
-        ([a], _) => Some((amount(a)?, None)),
-        (["STANDARD_CHARGE", _, _, c], [_, payer, plan, _]) => {
-            Some((charge(c)?, Some((*payer, *plan))))
+    match parts(name).collect::<Vec<_>>()[..] {
+        [a] => match up(a).as_str() {
+            "PAYER_NAME" => Some((Kind::Name, None)),
+            "PLAN_NAME" => Some((Kind::Plan, None)),
+            _ => Some((amount(a)?, None)),
+        },
+        [sc, c] if up(sc) == "STANDARD_CHARGE" => Some((charge(c)?, None)),
+        [sc, payer, plan, c] if up(sc) == "STANDARD_CHARGE" => {
+            Some((charge(c)?, Some((payer, plan))))
         }
-        ([a, _, _], [_, payer, plan]) => Some((amount(a)?, Some((*payer, *plan)))),
+        [a, payer, plan] => Some((amount(a)?, Some((payer, plan)))),
         _ => None,
     }
 }
@@ -360,6 +366,11 @@ fn parts(name: &str) -> impl Iterator<Item = &str> {
 /// A column name compared per part, trimmed and case-insensitive.
 fn key(name: &str) -> String {
     parts(name).map(str::to_uppercase).collect::<Vec<_>>().join("|")
+}
+
+/// `None` for an empty text.
+fn non_empty(s: &str) -> Option<String> {
+    (!s.is_empty()).then(|| s.to_owned())
 }
 
 /// A cell holding several values separated by `|`, trimmed, empty ones dropped.
