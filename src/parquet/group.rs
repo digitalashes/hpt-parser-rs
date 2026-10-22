@@ -39,7 +39,8 @@ struct Buffer {
 }
 
 enum Values {
-    Bytes(Vec<ByteArray>),
+    /// The values and the last one pushed.
+    Bytes(Vec<ByteArray>, Option<ByteArray>),
     F64(Vec<f64>),
     I64(Vec<i64>),
     Bool(Vec<bool>),
@@ -99,7 +100,7 @@ impl Group {
                 let pages = Pages::default();
                 let writer = column_writer(&pages, descr, properties);
                 let values = match c.kind {
-                    Type::String | Type::Json => Values::Bytes(Vec::new()),
+                    Type::String | Type::Json => Values::Bytes(Vec::new(), None),
                     Type::F64 => Values::F64(Vec::new()),
                     Type::I64 => Values::I64(Vec::new()),
                     Type::Bool => Values::Bool(Vec::new()),
@@ -122,7 +123,7 @@ impl Group {
     }
 
     /// One row: a value per column, in the columns' order.
-    pub(super) fn push(&mut self, row: impl Iterator<Item = Value>) -> Result<(), Error> {
+    pub(super) fn push<'a>(&mut self, row: impl Iterator<Item = Value<'a>>) -> Result<(), Error> {
         for (chunk, value) in self.columns.iter_mut().zip(row) {
             chunk.buffer.push(value);
         }
@@ -140,7 +141,7 @@ impl Group {
             let def = &c.buffer.def;
             let w = &mut c.writer;
             match &mut c.buffer.values {
-                Values::Bytes(v) => write::<ByteArrayType>(w, v, def, None)?,
+                Values::Bytes(v, _) => write::<ByteArrayType>(w, v, def, None)?,
                 Values::List(v, rep) => write::<ByteArrayType>(w, v, def, Some(rep))?,
                 Values::F64(v) => write::<DoubleType>(w, v, def, None)?,
                 Values::I64(v) => write::<Int64Type>(w, v, def, None)?,
@@ -197,7 +198,7 @@ fn write<T: DataType>(
 }
 
 impl Buffer {
-    fn push(&mut self, value: Value) {
+    fn push(&mut self, value: Value<'_>) {
         let def = match (&mut self.values, value) {
             // Levels of `optional group (LIST) { repeated group list { optional element } }`:
             // 0 null list, 1 empty list, 3 an element; repetition 1 for every element but
@@ -218,8 +219,13 @@ impl Buffer {
                 rep.push(0);
                 0
             }
-            (Values::Bytes(v), Value::Text(s)) => {
-                v.push(s.into_bytes().into());
+            (Values::Bytes(v, last), Value::Text(s)) => {
+                // A value like the one before (a charge's fields over its payers, the
+                // file's metadata on every row) shares its bytes instead of a copy.
+                if last.as_ref().is_none_or(|l| l.data() != s.as_bytes()) {
+                    *last = Some(s.into_owned().into_bytes().into());
+                }
+                v.extend(last.clone());
                 1
             }
             (Values::F64(v), Value::F64(x)) => {

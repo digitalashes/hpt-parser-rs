@@ -138,11 +138,12 @@ const DOMAINS: &[(&str, &[&str])] = &[
     ("billing_class", &["professional", "facility", "both"]),
 ];
 
-/// A column's value, handed to the writer.
+/// A column's value, handed to the writer. Text borrows from the record when no transform
+/// changed it.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Value {
+pub enum Value<'a> {
     Null,
-    Text(String),
+    Text(Cow<'a, str>),
     List(Vec<String>),
     F64(f64),
     I64(i64),
@@ -428,7 +429,7 @@ enum Work<'a> {
 impl Column {
     /// The column's value for one record. A plugin column is null and a plugin transform
     /// passes the value on: plugins are called by the writer (feature `plugins`).
-    pub fn value(&self, record: &Record, metadata: &Metadata) -> Value {
+    pub fn value<'a>(&self, record: &'a Record, metadata: &'a Metadata) -> Value<'a> {
         let Source::Fields(fields) = &self.source else {
             return Value::Null;
         };
@@ -601,21 +602,21 @@ fn codes_json(codes: &[Code]) -> String {
     to_json(&items)
 }
 
-fn cast(work: Work<'_>, kind: Type) -> Value {
+fn cast(work: Work<'_>, kind: Type) -> Value<'_> {
     let s = match (work, kind) {
-        (Work::Json(s), Type::Json) => return Value::Text(s),
-        (Work::Codes(codes), Type::Json) => return Value::Text(codes_json(codes)),
+        (Work::Json(s), Type::Json) => return Value::Text(s.into()),
+        (Work::Codes(codes), Type::Json) => return Value::Text(codes_json(codes).into()),
         (Work::Codes(codes), kind) => return cast(Work::List(codes_list(codes)), kind),
         (Work::List(list), Type::List) => return Value::List(list),
-        (Work::List(list), Type::Json) => return Value::Text(to_json(&list)),
-        (Work::List(list), Type::String) => return Value::Text(list.join("|")),
+        (Work::List(list), Type::Json) => return Value::Text(to_json(&list).into()),
+        (Work::List(list), Type::String) => return Value::Text(list.join("|").into()),
         (Work::Null | Work::List(_), _) => return Value::Null,
         (Work::Text(s), _) => s,
         (Work::Json(s), _) => Cow::Owned(s),
     };
     let t = trim(&s);
     let value = match kind {
-        Type::String => Some(Value::Text(s.into_owned())),
+        Type::String => Some(Value::Text(s)),
         Type::F64 => t.parse::<f64>().ok().filter(|n| n.is_finite()).map(Value::F64),
         Type::I64 => t.parse().ok().map(Value::I64),
         Type::Bool => match t.to_lowercase().as_str() {
@@ -624,7 +625,7 @@ fn cast(work: Work<'_>, kind: Type) -> Value {
             _ => None,
         },
         Type::Date => date(t).map(Value::Date),
-        Type::Json => Some(Value::Text(to_json(&s))),
+        Type::Json => Some(Value::Text(to_json(&s).into())),
         Type::List => Some(Value::List(split(&s, "|"))),
     };
     value.unwrap_or(Value::Null)
@@ -692,15 +693,20 @@ mod tests {
         Record { charge: Arc::new(charge), payer: Some(payer), position: 7 }
     }
 
+    /// The value of `c` over a record and metadata that live to the end of the test run.
+    fn leaked(c: &Column, record: Record) -> Value<'static> {
+        c.value(Box::leak(Box::new(record)), Box::leak(Box::default()))
+    }
+
     /// The column over `value` in `payer.dollar`.
-    fn run(kind: &str, transform: &str, value: &str) -> Value {
+    fn run(kind: &str, transform: &str, value: &str) -> Value<'static> {
         let c = column(&format!(
             "from = \"payer.dollar\"\ntype = \"{kind}\"\ntransform = [{transform}]"
         ));
-        c.value(&record(value), &Metadata::default())
+        leaked(&c, record(value))
     }
 
-    fn t(s: &str) -> Value {
+    fn t(s: &str) -> Value<'_> {
         Value::Text(s.into())
     }
 
@@ -773,7 +779,7 @@ mod tests {
             let c = column(&format!(
                 "from = \"charge.codes\"\ntype = \"{kind}\"\ntransform = [{transform}]"
             ));
-            c.value(&record("1"), &Metadata::default())
+            leaked(&c, record("1"))
         };
         assert_eq!(
             value("json", "\"codes_by_type\""),

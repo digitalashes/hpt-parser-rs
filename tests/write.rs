@@ -13,7 +13,7 @@ fn builtin_config() {
         .map(|c| (c.name.as_str(), c.value(&record, parser.metadata())))
         .filter(|(_, v)| *v != Value::Null)
         .collect();
-    let t = |s: &str| Value::Text(s.into());
+    let t = |s: &'static str| Value::Text(s.into());
     assert_eq!(
         row,
         [
