@@ -3,30 +3,51 @@
 use crate::Error;
 use crate::config::{Column, Type, Value};
 use ::parquet::column::page::{CompressedPage, PageWriteSpec, PageWriter};
-use ::parquet::column::writer::{ColumnWriter, get_column_writer, get_typed_column_writer_mut};
+use ::parquet::column::writer::{
+    ColumnCloseResult, ColumnWriter, get_column_writer, get_typed_column_writer_mut,
+};
 use ::parquet::data_type::{
     BoolType, ByteArray, ByteArrayType, DataType, DoubleType, Int32Type, Int64Type,
 };
+use ::parquet::errors::ParquetError;
 use ::parquet::file::properties::WriterPropertiesPtr;
 use ::parquet::file::writer::{SerializedFileWriter, SerializedPageWriter, TrackedWrite};
 use ::parquet::schema::types::ColumnDescPtr;
 use bytes::Bytes;
 use std::io::{self, Write};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::thread;
 
 /// The row group being built. Rows are buffered per column for a batch of
-/// `write_batch_size` rows, then encoded and compressed into pages kept in memory; at
-/// [`Group::flush`] the pages go to the file as one row group.
+/// `write_batch_size` rows, which a thread of its own then encodes and compresses into
+/// pages kept in memory while the next batch fills; at [`Group::flush`] the pages go to the
+/// file as one row group.
 pub(super) struct Group {
-    columns: Vec<Chunk>,
-    properties: WriterPropertiesPtr,
+    /// The batch being filled, a buffer per column.
+    buffers: Vec<Buffer>,
+    /// The other batch's buffers, empty, when the encoder is not working on them.
+    spare: Option<Vec<Buffer>>,
+    jobs: Sender<Job>,
+    done: Receiver<Done>,
+    batch_size: usize,
     rows: usize,
     batch: usize,
 }
 
-/// A column chunk: the batch not yet encoded, the writer that encodes it and its pages.
+/// A batch for the encoder; with `close`, the column chunks are closed after it.
+struct Job {
+    buffers: Vec<Buffer>,
+    close: bool,
+}
+
+/// The job's buffers, emptied, and with `close` each column chunk's pages and metadata.
+type Done = Result<(Vec<Buffer>, Vec<(Bytes, ColumnCloseResult)>), ParquetError>;
+
+const ENCODER: &str = "the encoder thread lives as long as its group and does not panic";
+
+/// A column chunk on the encoder's side: the writer that encodes it and its pages.
 struct Chunk {
-    buffer: Buffer,
     descr: ColumnDescPtr,
     pages: Pages,
     writer: ColumnWriter<'static>,
@@ -89,33 +110,46 @@ fn column_writer(
 }
 
 impl Group {
-    /// `descrs`: the schema's leaf columns, one per column.
+    /// `descrs`: the schema's leaf columns, one per column. Starts the encoder thread.
     pub(super) fn new(
         columns: &[Column],
         descrs: &[ColumnDescPtr],
         properties: &WriterPropertiesPtr,
-    ) -> Self {
-        let columns = (columns.iter().zip(descrs))
-            .map(|(c, descr)| {
+    ) -> Result<Self, Error> {
+        let buffers = || {
+            let values = |c: &Column| match c.kind {
+                Type::String | Type::Json => Values::Bytes(Vec::new(), None),
+                Type::F64 => Values::F64(Vec::new()),
+                Type::I64 => Values::I64(Vec::new()),
+                Type::Bool => Values::Bool(Vec::new()),
+                Type::Date => Values::Date(Vec::new()),
+                Type::List => Values::List(Vec::new(), Vec::new()),
+            };
+            columns.iter().map(|c| Buffer { values: values(c), def: Vec::new() }).collect()
+        };
+        let chunks = (descrs.iter())
+            .map(|descr| {
                 let pages = Pages::default();
                 let writer = column_writer(&pages, descr, properties);
-                let values = match c.kind {
-                    Type::String | Type::Json => Values::Bytes(Vec::new(), None),
-                    Type::F64 => Values::F64(Vec::new()),
-                    Type::I64 => Values::I64(Vec::new()),
-                    Type::Bool => Values::Bool(Vec::new()),
-                    Type::Date => Values::Date(Vec::new()),
-                    Type::List => Values::List(Vec::new(), Vec::new()),
-                };
-                Chunk {
-                    buffer: Buffer { values, def: Vec::new() },
-                    descr: descr.clone(),
-                    pages,
-                    writer,
-                }
+                Chunk { descr: descr.clone(), pages, writer }
             })
             .collect();
-        Group { columns, properties: properties.clone(), rows: 0, batch: 0 }
+        let (jobs, job) = mpsc::channel();
+        let (finished, done) = mpsc::channel();
+        let properties = properties.clone();
+        let batch_size = properties.write_batch_size();
+        thread::Builder::new()
+            .name("parquet encoder".into())
+            .spawn(move || encoder(chunks, &properties, &job, &finished))?;
+        Ok(Group {
+            buffers: buffers(),
+            spare: Some(buffers()),
+            jobs,
+            done,
+            batch_size,
+            rows: 0,
+            batch: 0,
+        })
     }
 
     pub(super) fn len(&self) -> usize {
@@ -124,32 +158,26 @@ impl Group {
 
     /// One row: a value per column, in the columns' order.
     pub(super) fn push<'a>(&mut self, row: impl Iterator<Item = Value<'a>>) -> Result<(), Error> {
-        for (chunk, value) in self.columns.iter_mut().zip(row) {
-            chunk.buffer.push(value);
+        for (buffer, value) in self.buffers.iter_mut().zip(row) {
+            buffer.push(value);
         }
         self.rows += 1;
         self.batch += 1;
-        if self.batch == self.properties.write_batch_size() {
-            self.encode()?;
+        if self.batch == self.batch_size {
+            self.send(false)?;
         }
         Ok(())
     }
 
-    /// Encodes the buffered batch and clears the buffers, keeping their capacity.
-    fn encode(&mut self) -> Result<(), Error> {
-        for c in &mut self.columns {
-            let def = &c.buffer.def;
-            let w = &mut c.writer;
-            match &mut c.buffer.values {
-                Values::Bytes(v, _) => write::<ByteArrayType>(w, v, def, None)?,
-                Values::List(v, rep) => write::<ByteArrayType>(w, v, def, Some(rep))?,
-                Values::F64(v) => write::<DoubleType>(w, v, def, None)?,
-                Values::I64(v) => write::<Int64Type>(w, v, def, None)?,
-                Values::Bool(v) => write::<BoolType>(w, v, def, None)?,
-                Values::Date(v) => write::<Int32Type>(w, v, def, None)?,
-            }
-            c.buffer.def.clear();
-        }
+    /// Hands the batch to the encoder and goes on with the spare buffers, first waiting for
+    /// the encoder to give them back if it still has them.
+    fn send(&mut self, close: bool) -> Result<(), Error> {
+        let spare = match self.spare.take() {
+            Some(spare) => spare,
+            None => self.done.recv().expect(ENCODER)?.0,
+        };
+        let buffers = std::mem::replace(&mut self.buffers, spare);
+        self.jobs.send(Job { buffers, close }).expect(ENCODER);
         self.batch = 0;
         Ok(())
     }
@@ -163,18 +191,57 @@ impl Group {
         if self.rows == 0 {
             return Ok(());
         }
-        self.encode()?;
+        self.send(true)?;
+        let (spare, chunks) = self.done.recv().expect(ENCODER)?;
+        self.spare = Some(spare);
         let mut group = file.next_row_group()?;
-        for c in &mut self.columns {
-            let writer = column_writer(&c.pages, &c.descr, &self.properties);
-            let close = std::mem::replace(&mut c.writer, writer).close()?;
-            let pages =
-                std::mem::take(&mut *c.pages.0.lock().unwrap_or_else(PoisonError::into_inner));
-            group.append_column(&Bytes::from(pages), close)?;
+        for (pages, close) in chunks {
+            group.append_column(&pages, close)?;
         }
         group.close()?;
         self.rows = 0;
         Ok(())
+    }
+}
+
+/// The encoder thread: encodes each job's batch, then, with `close`, closes the column
+/// chunks and starts new ones. It ends when the group is dropped.
+fn encoder(
+    mut chunks: Vec<Chunk>,
+    properties: &WriterPropertiesPtr,
+    jobs: &Receiver<Job>,
+    done: &Sender<Done>,
+) {
+    let job = |chunks: &mut Vec<Chunk>, Job { mut buffers, close }| {
+        for (c, buffer) in chunks.iter_mut().zip(&mut buffers) {
+            let def = &buffer.def;
+            let w = &mut c.writer;
+            match &mut buffer.values {
+                Values::Bytes(v, _) => write::<ByteArrayType>(w, v, def, None)?,
+                Values::List(v, rep) => write::<ByteArrayType>(w, v, def, Some(rep))?,
+                Values::F64(v) => write::<DoubleType>(w, v, def, None)?,
+                Values::I64(v) => write::<Int64Type>(w, v, def, None)?,
+                Values::Bool(v) => write::<BoolType>(w, v, def, None)?,
+                Values::Date(v) => write::<Int32Type>(w, v, def, None)?,
+            }
+            buffer.def.clear();
+        }
+        let mut closed = Vec::new();
+        if close {
+            for c in chunks {
+                let writer = column_writer(&c.pages, &c.descr, properties);
+                let close = std::mem::replace(&mut c.writer, writer).close()?;
+                let pages =
+                    std::mem::take(&mut *c.pages.0.lock().unwrap_or_else(PoisonError::into_inner));
+                closed.push((Bytes::from(pages), close));
+            }
+        }
+        Ok((buffers, closed))
+    };
+    for j in jobs {
+        if done.send(job(&mut chunks, j)).is_err() {
+            return;
+        }
     }
 }
 
@@ -184,7 +251,7 @@ fn write<T: DataType>(
     values: &mut Vec<T::T>,
     def: &[i16],
     rep: Option<&mut Vec<i16>>,
-) -> Result<(), Error> {
+) -> Result<(), ParquetError> {
     get_typed_column_writer_mut::<T>(writer).write_batch(
         values,
         Some(def),

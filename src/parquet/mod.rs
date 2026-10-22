@@ -183,7 +183,7 @@ pub fn write<R: Read>(
     let properties =
         Arc::new(WriterProperties::builder().set_compression(output.compression.0).build());
     let descr = SchemaDescriptor::new(schema.clone());
-    let group = Group::new(&config.columns, descr.columns(), &properties);
+    let group = Group::new(&config.columns, descr.columns(), &properties)?;
     let mut files = Files {
         output,
         schema,
