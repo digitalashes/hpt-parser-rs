@@ -1139,6 +1139,7 @@ mod tests {
         let close = |a, b, want: f64| assert!((similarity(a, b) - want).abs() < 1e-12, "{a} {b}");
         close("kitten", "sitting", 4.0 / 7.0);
         close("aab", "b", 1.0 / 3.0);
+        close("ab", "a", 0.5);
         close("b", "aab", 1.0 / 3.0);
         close("abc", "", 0.0);
         close("", "", 1.0);

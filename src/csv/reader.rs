@@ -322,6 +322,13 @@ mod tests {
     }
 
     #[test]
+    fn cells_after_commas() {
+        // The empty-cell scan compares eight bytes with commas at once.
+        let (rows, _) = read("a,,-5,\u{5e1}x\n".as_bytes(), 65536);
+        assert_eq!(rows, [(vec!["a".into(), String::new(), "-5".into(), "\u{5e1}x".into()], 1)]);
+    }
+
+    #[test]
     fn physical_lines() {
         let lines =
             |bytes: &[u8], chunk| read(bytes, chunk).0.iter().map(|r| r.1).collect::<Vec<_>>();

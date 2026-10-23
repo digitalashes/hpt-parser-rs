@@ -144,6 +144,13 @@ fn options() {
     assert_eq!(meta.file_metadata().schema_descr().num_columns(), 1);
     assert_eq!(meta.num_row_groups() as u64, records(TALL).div_ceil(2));
     assert_eq!(format!("{:?}", meta.row_group(0).column(0).compression()), "SNAPPY");
+    // The alias `desc` read as `description`.
+    let first = Parser::new(File::open(TALL).unwrap(), Format::Csv).next().unwrap().unwrap();
+    let row = reader.get_row_iter(None).unwrap().next().unwrap().unwrap();
+    assert_eq!(
+        row.to_string(),
+        format!("{{d: {:?}}}", first.charge.description.as_deref().unwrap())
+    );
 }
 
 #[test]

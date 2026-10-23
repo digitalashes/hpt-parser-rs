@@ -265,12 +265,13 @@ A,99213,CPT,,Acme,PPO,1.5,7,yes,2026-01-02
     #[test]
     fn chunk_footers() {
         // A file's footer has what was read when it closed: the first closes once the second
-        // item is read, the first to use an alias.
+        // item is read, the first to use an alias, which comes in the second 64 KiB read.
         let item =
             |m| format!(r#"{{"description": "d", "standard_charges": [{{"{m}": ["50"]}}]}}"#);
         let input = format!(
-            r#"{{"standard_charge_information": [{}, {}, {}]}}"#,
+            r#"{{"standard_charge_information": [{}, {}{}, {}]}}"#,
             item("modifier_code"),
+            " ".repeat(70_000),
             item("modifiers"),
             item("modifier_code")
         );

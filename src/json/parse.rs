@@ -774,6 +774,43 @@ mod tests {
     }
 
     #[test]
+    fn escapes() {
+        let input = r#"{"a": "\" \\ \/ \b\f\n\r\t \u00e9 \ud83d\ude00 \udc00 \ud83d\u0041."}"#;
+        for chunk in [1, 65536] {
+            let want = "\" \\ / \u{8}\u{c}\n\r\t \u{e9} \u{1f600} \u{fffd} \u{fffd}.";
+            assert_eq!(
+                values(input, chunk).unwrap(),
+                [(Key::Name("a".into()), Value::String(want.into()))]
+            );
+        }
+    }
+
+    #[test]
+    fn messages() {
+        let message = |input: &str| match values(input, 65536) {
+            Err(Error::Json { message, .. }) => message,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(message("{\"a\": tru}"), "Unexpected '}' in state TRUE3");
+        assert_eq!(
+            message("{\"a\": \"\\u12x\"}"),
+            "Unexpected 'x' in state STRING_UNICODE_DIGIT_3"
+        );
+        assert_eq!(message("{\"a\" 1}"), "Unexpected NUMBER (1) in state COLON");
+    }
+
+    #[test]
+    fn closing_tokens() {
+        // A comma before a closing bracket or brace, and a bracket closing an object, a brace
+        // an array, in values that are kept.
+        for input in
+            [r#"{"b": [1,]}"#, r#"{"a": {"n": 1,}}"#, r#"{"b": [1}}"#, r#"{"a": {"n": 1]}"#]
+        {
+            assert!(values(input, 65536).is_err(), "{input}");
+        }
+    }
+
+    #[test]
     fn items_must_be_an_array() {
         for input in ["{\"b\": {\"a\": 1}}", "{\"b\": 5}", "{\"b\": null}"] {
             let Err(Error::Json { message, .. }) = values(input, 65536) else {

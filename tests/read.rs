@@ -513,3 +513,27 @@ fn json_fields() {
     // An empty string is no value.
     assert_eq!(record.charge.notes, None);
 }
+
+#[test]
+fn json_aliases_of_one_length() {
+    let input = r#"{"standard_charge_information": [{"description": "a",
+        "standard_charges": [{"place": "inpatient", "payers_information": [{"payer": "Acme"}]}]}]}"#;
+    let aliases = [("place", "setting"), ("payer", "payer_name")];
+    let record = Parser::new(input.as_bytes(), Format::Json)
+        .with_aliases(aliases.map(|(a, b)| (a.into(), b.into())))
+        .next()
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.charge.setting, s("inpatient"));
+    assert_eq!(record.payer.unwrap().name, s("Acme"));
+}
+
+#[test]
+fn bom_whitespace() {
+    // A BOM goes with the whitespace after it as far as the first 64 KiB read reaches, as the
+    // validator reads.
+    let input =
+        format!("\u{feff}{}h\nv\ndescription,payer_name,plan_name\nVisit,,\n", "\n".repeat(2000));
+    let record = Parser::new(input.as_bytes(), Format::Csv).next().unwrap().unwrap();
+    assert_eq!(record.position, 2004);
+}
