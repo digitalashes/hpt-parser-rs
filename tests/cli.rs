@@ -53,6 +53,8 @@ fn usage() {
         (&["-"], "standard input needs --format"),
         (&["--chunk-size", "x", TALL], "--chunk-size x: expected a whole number"),
         (&[TALL, "--metadata"], "--metadata needs a value"),
+        // `=` joins a long option and its value only.
+        (&[TALL, "-o=t.parquet"], "unknown option -o=t.parquet"),
     ] {
         let out = hpt_parser(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
@@ -112,6 +114,52 @@ fn parquet() {
 }
 
 #[test]
+fn options() {
+    let dir = dir("cli-options");
+    let input = dir.join("t.txt");
+    let csv = fs::read_to_string(TALL).unwrap().replacen("\ndescription,", "\ndesc,", 1);
+    fs::write(&input, csv).unwrap();
+    let config = dir.join("c.toml");
+    let toml = "[aliases.csv]\ndescription = [\"desc\"]\n\n[[column]]\nname = \"d\"\nfrom = \"charge.description\"\ntype = \"string\"\n";
+    fs::write(&config, toml).unwrap();
+    let out = dir.join("t.parquet");
+    let (input, config, out_arg) =
+        (input.to_str().unwrap(), config.to_str().unwrap(), out.to_str().unwrap());
+    let run = hpt_parser(&[
+        input,
+        "--format",
+        "csv",
+        "-c",
+        config,
+        "--compression",
+        "snappy",
+        "--row-group-size",
+        "2",
+        "-o",
+        out_arg,
+    ]);
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    let reader = SerializedFileReader::new(File::open(&out).unwrap()).unwrap();
+    let meta = reader.metadata();
+    assert_eq!(meta.file_metadata().schema_descr().num_columns(), 1);
+    assert_eq!(meta.num_row_groups() as u64, records(TALL).div_ceil(2));
+    assert_eq!(format!("{:?}", meta.row_group(0).column(0).compression()), "SNAPPY");
+}
+
+#[test]
+fn stdin() {
+    let dir = dir("cli-stdin");
+    let run = Command::new(env!("CARGO_BIN_EXE_hpt-parser"))
+        .args(["-", "--format", "csv"])
+        .current_dir(&dir)
+        .stdin(File::open(TALL).unwrap())
+        .output()
+        .unwrap();
+    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
+    assert_eq!(rows(&dir.join("out.parquet")), records(TALL));
+}
+
+#[test]
 fn chunks() {
     let dir = dir("cli-chunks");
     let run =
@@ -137,6 +185,12 @@ fn metadata() {
     assert_eq!(value["hospital_name"], "North Valley Hospital");
     let table = hpt_parser(&["--metadata=table", TALL]);
     assert!(text(&table.stdout).contains("hospital_name          North Valley Hospital\n"));
+    assert!(text(&table.stdout).contains("layout                 tall\n"));
+    // A JSON file's metadata may come after the charge items.
+    let late = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/metadata-after.json");
+    let value: serde_json::Value =
+        serde_json::from_slice(&hpt_parser(&["--metadata=json", late]).stdout).unwrap();
+    assert_eq!(value["hospital_name"], "Lake Hospital");
     let config = hpt_parser(&["--print-config"]);
     assert_eq!(text(&config.stdout), include_str!("../src/default.toml"));
 }

@@ -167,19 +167,23 @@ fn header_errors() {
 #[test]
 fn template_placeholders() {
     // A tall file with a template's wide column left in: the column is not read.
-    let input = "a\nb\ndescription,payer_name,plan_name,count | [payer_name] | [plan_name]\n\
-        Visit,Acme,PPO,9\n";
+    let input = "a\nb\ndescription,payer_name,plan_name,count | [payer_name] | [plan_name],\
+        median_amount | Acme | [plan_name]\nVisit,Acme,PPO,9,8\n";
     let mut parser = Parser::new(input.as_bytes(), Format::Csv);
     let record = parser.next().unwrap().unwrap();
     assert_eq!(record.payer, Some(with!(Payer { name: s("Acme"), plan: s("PPO") })));
     assert_eq!(parser.metadata().layout, Some(Layout::Tall));
+    // Row 1's `a` names nothing.
+    assert_eq!(parser.metadata().attestation, None);
 }
 
 #[test]
 fn payer_without_plan() {
+    // `other | ...` is no payer column.
     let input = "a\nb\ndescription,standard_charge | Acme | negotiated_dollar,\
-        estimated_amount | Acme,standard_charge | Beta | HMO | negotiated_dollar\n\
-        Visit,100,90,200\n";
+        estimated_amount | Acme,standard_charge | Beta | HMO | negotiated_dollar,\
+        standard_charge | Beta | HMO | negotiated_algorithm,other | Beta | HMO | methodology\n\
+        Visit,100,90,200,algo,case rate\n";
     let mut parser = Parser::new(input.as_bytes(), Format::Csv);
     let records = parser.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
     assert_eq!(parser.metadata().layout, Some(Layout::Wide));
@@ -188,7 +192,12 @@ fn payer_without_plan() {
         payers,
         [
             Some(with!(Payer { name: s("Acme"), dollar: s("100"), estimated_amount: s("90") })),
-            Some(with!(Payer { name: s("Beta"), plan: s("HMO"), dollar: s("200") })),
+            Some(with!(Payer {
+                name: s("Beta"),
+                plan: s("HMO"),
+                dollar: s("200"),
+                algorithm: s("algo"),
+            })),
         ]
     );
     // In a tall file such a column is not read.
@@ -476,4 +485,31 @@ fn alias_of_other_shape() {
     assert_eq!(record.charge.gross_charge, None);
     assert_eq!(record.payer.unwrap().median_amount, None);
     assert!(parser.metadata().aliases_used.is_empty());
+}
+
+#[test]
+fn error_source() {
+    use std::error::Error as _;
+    assert!(Error::from(std::io::Error::other("x")).source().is_some());
+    #[cfg(feature = "parquet")]
+    assert!(Error::from(parquet::errors::ParquetError::General("x".into())).source().is_some());
+    assert!(Error::Config { message: "x".into() }.source().is_none());
+}
+
+#[test]
+fn trimmed() {
+    // JS trim: tabs and line ends too.
+    let input = "a\nb\ndescription,payer_name,plan_name\n\"\tVisit\n\",Acme,PPO\n";
+    let record = Parser::new(input.as_bytes(), Format::Csv).next().unwrap().unwrap();
+    assert_eq!(record.charge.description, s("Visit"));
+}
+
+#[test]
+fn json_fields() {
+    let input = r#"{"standard_charge_information": [{"description": "a",
+        "standard_charges": [{"billing_class": "facility", "additional_generic_notes": ""}]}]}"#;
+    let record = Parser::new(input.as_bytes(), Format::Json).next().unwrap().unwrap();
+    assert_eq!(record.charge.billing_class, s("facility"));
+    // An empty string is no value.
+    assert_eq!(record.charge.notes, None);
 }

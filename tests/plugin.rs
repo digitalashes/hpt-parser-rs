@@ -114,6 +114,21 @@ type = \"string\"\n[[filter]]\nplugin = \"t.keep_inpatient\"\nfields = \"charge.
 }
 
 #[test]
+fn shapes() {
+    // `upper` gives a list and an object back as they came.
+    let path = out("plugin-shapes");
+    let toml = config(
+        "[[column]]\nname = \"m\"\nfrom = \"charge.modifiers\"\ntype = \"list\"
+transform = [{ plugin = \"t.upper\" }]\n[[column]]\nname = \"c\"\nfrom = \"charge.codes\"
+type = \"json\"\ntransform = [\"codes_by_type\", { plugin = \"t.upper\" }]",
+    );
+    let input = "a\nb\ndescription,code | 1,code | 1 | type,modifiers,payer_name,plan_name
+Visit,99213,CPT,50|lt,,\n";
+    run(input, &toml, &path).unwrap();
+    assert_eq!(rows(&path), [r#"{m: ["50", "lt"], c: "{"CPT":["99213"]}"}"#]);
+}
+
+#[test]
 fn batches_keep_order() {
     let path = out("plugin-batches");
     let toml = config(&format!(

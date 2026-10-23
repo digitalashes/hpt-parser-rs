@@ -178,6 +178,8 @@ A,99213,CPT,,Acme,PPO,1.5,7,yes,2026-01-02
             let e = parse_compression(codec).unwrap_err();
             assert!(matches!(e, Error::Config { .. }), "{codec}: {e}");
         }
+        let e = parse_compression("lz4:1").unwrap_err();
+        assert_eq!(e.to_string(), "compression `lz4:1`: takes no level");
     }
 
     #[test]
@@ -246,6 +248,41 @@ A,99213,CPT,,Acme,PPO,1.5,7,yes,2026-01-02
         assert!(summary.late_metadata);
         assert_eq!(rows(&path), [r#"{hospital: null, s: "Office visit"}"#]);
         assert_eq!(footer(&path)["hospital_name"], "Lake Hospital");
+
+        // Metadata between two arrays of items: each row has what was read before its item.
+        let item = |d| format!(r#"[{{"description": "{d}", "standard_charges": [{{}}]}}]"#);
+        let input = format!(
+            r#"{{"standard_charge_information": {}, "hospital_name": "X",
+            "standard_charge_information": {}}}"#,
+            item("a"),
+            item("b")
+        );
+        let path = path.with_file_name("between.parquet");
+        run(input.as_bytes(), Format::Json, &config, &Output::new(&path));
+        assert_eq!(rows(&path), [r#"{hospital: null, s: "a"}"#, r#"{hospital: "X", s: "b"}"#]);
+    }
+
+    #[test]
+    fn chunk_footers() {
+        // A file's footer has what was read when it closed: the first closes once the second
+        // item is read, the first to use an alias.
+        let item =
+            |m| format!(r#"{{"description": "d", "standard_charges": [{{"{m}": ["50"]}}]}}"#);
+        let input = format!(
+            r#"{{"standard_charge_information": [{}, {}, {}]}}"#,
+            item("modifier_code"),
+            item("modifiers"),
+            item("modifier_code")
+        );
+        let config = columns(&[("s", "charge.description", "string")]);
+        let mut output = Output::new(dir("chunk-footers").join("out.parquet"));
+        output.chunk_size = 1;
+        let parser = Parser::new(input.as_bytes(), Format::Json)
+            .with_aliases([("modifiers".into(), "modifier_code".into())]);
+        let mut chunks = Vec::new();
+        write(parser, &config, &output, |c| chunks.push(c.path.clone())).unwrap();
+        let used = serde_json::json!({"modifiers": "modifier_code"});
+        assert_eq!(footer(&chunks[0])["aliases_used"], used);
     }
 
     #[test]

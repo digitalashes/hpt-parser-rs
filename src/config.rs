@@ -1106,6 +1106,7 @@ mod tests {
         assert_eq!(run("string", "{ round = 2 }", "1e3"), t("1000.00"));
         assert_eq!(run("string", "{ round = 0 }", "2.5"), t("2"));
         assert_eq!(run("string", "{ round = 2 }", "abc"), t("abc"));
+        assert_eq!(run("string", "{ round = 2 }", "1e999"), t("1e999"));
         let map = "{ map = { ip = \"inpatient\", OP = \"outpatient\" } }";
         assert_eq!(run("string", map, " ip "), t("inpatient"));
         assert_eq!(run("string", map, "op"), t("outpatient"));
@@ -1134,6 +1135,16 @@ mod tests {
     }
 
     #[test]
+    fn levenshtein() {
+        let close = |a, b, want: f64| assert!((similarity(a, b) - want).abs() < 1e-12, "{a} {b}");
+        close("kitten", "sitting", 4.0 / 7.0);
+        close("aab", "b", 1.0 / 3.0);
+        close("b", "aab", 1.0 / 3.0);
+        close("abc", "", 0.0);
+        close("", "", 1.0);
+    }
+
+    #[test]
     fn casts() {
         assert_eq!(run("f64", "", " 12 "), Value::F64(12.0));
         assert_eq!(run("f64", "", "1e3"), Value::F64(1000.0));
@@ -1149,6 +1160,12 @@ mod tests {
         assert_eq!(run("date", "", "2026-01-01"), Value::Date(20454));
         assert_eq!(run("date", "", "2/29/2024"), Value::Date(19782));
         assert_eq!(run("date", "", "2026-02-30"), Value::Null);
+        assert_eq!(run("date", "", "2026-02-28"), Value::Date(20512));
+        assert_eq!(run("date", "", "2025-02-29"), Value::Null);
+        assert_eq!(run("date", "", "1900-02-29"), Value::Null);
+        assert_eq!(run("date", "", "2000-02-29"), Value::Date(11016));
+        assert_eq!(run("date", "", "2026-04-30"), Value::Date(20573));
+        assert_eq!(run("date", "", "2026-04-31"), Value::Null);
         assert_eq!(run("date", "", "13/1/2026"), Value::Null);
         assert_eq!(run("date", "", "2026-1-01"), Value::Null);
         assert_eq!(run("date", "", "2026-01/01"), Value::Null);
@@ -1241,6 +1258,10 @@ mod tests {
         );
         assert!(col("from = \"payer.name\"\ntype = \"text\"").contains("unknown variant `text`"));
         assert_eq!(
+            col("plugin = \"p.\"\ntype = \"string\""),
+            "column `c`: `p.` is not `<plugin>.<function>`"
+        );
+        assert_eq!(
             message("[[filter]]\nplugin = \"q.keep\""),
             "filter: plugin `q` is not declared in a [[plugin]] table"
         );
@@ -1264,6 +1285,10 @@ mod tests {
         assert_eq!(
             message("[aliases.json]\nmodifiers = [\"m\"]"),
             "aliases.json: `modifiers` is not a name the parser reads"
+        );
+        assert_eq!(
+            message("[aliases.csv]\nbogus = [\"b\"]"),
+            "aliases.csv: `bogus` is not a name the parser reads"
         );
         assert_eq!(
             message("[aliases.csv]\nsetting = [\"Place\"]\ncount = [\"place\"]"),
