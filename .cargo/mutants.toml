@@ -19,12 +19,14 @@ exclude_re = [
     # A change counted at every item only ends more batches early.
     'json/mod\.rs:\d+:\d+: replace > with >= in Parser<R>::fill',
     # An open file has a record.
-    'replace > with >= in Files<.+>::row',
+    'mod\.rs:346:63: replace > with >= in Files<.+>::rows',
     # The pages are in memory: flushing them does nothing.
     'replace <impl PageWriter for PageSink>::close',
-    # The batch size only sets how often the buffers go to the encoder.
-    'group\.rs:165:20: replace \+= with \*= in Group::push',
-    'replace == with != in Group::push',
+    # The batch size only sets how often the buffers are encoded.
+    'group\.rs:258:30: replace \+= with \*= in worker',
+    'group\.rs:259:33: replace == with != in worker',
+    # The thread a batch is dropped on.
+    'replace Group::free with \(\)',
     # The lossy pass gives the same text for an input cut short.
     'replace match guard e.error_len\(\).is_none\(\) with false in decode',
     # Buffer reuse: a fresh buffer instead.

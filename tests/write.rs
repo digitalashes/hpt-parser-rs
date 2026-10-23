@@ -207,6 +207,33 @@ A,99213,CPT,,Acme,PPO,1.5,7,yes,2026-01-02
         assert!(!dir.join("out.parquet").exists());
     }
 
+    /// Records come in batches of 512, so files and row groups end inside a batch and a
+    /// batch starts with a row group half full.
+    #[test]
+    fn row_groups_and_chunks_across_batches() {
+        let config = columns(&[("s", "charge.description", "string")]);
+        let input = csv(1200);
+        let dir = dir("batches");
+        let groups = |path: &Path| {
+            let reader = reader(path);
+            let groups = 0..reader.metadata().num_row_groups();
+            groups.map(|i| reader.metadata().row_group(i).num_rows()).collect::<Vec<_>>()
+        };
+        let mut output = Output::new(dir.join("out.parquet"));
+        (output.chunk_size, output.row_group_size) = (1000, 300);
+        let (summary, chunks) = run(input.as_bytes(), Format::Csv, &config, &output);
+        assert_eq!(counts(summary), (2, 1200, false));
+        assert_eq!(chunks.iter().map(|c| c.records).collect::<Vec<_>>(), [1000, 200]);
+        assert_eq!(groups(&chunks[0].path), [300, 300, 300, 100]);
+        assert_eq!(groups(&chunks[1].path), [200]);
+        assert_eq!(rows(&chunks[1].path)[0], r#"{s: "Item 1001"}"#);
+
+        let mut output = Output::new(dir.join("one.parquet"));
+        output.row_group_size = 0;
+        run(input.as_bytes(), Format::Csv, &config, &output);
+        assert_eq!(groups(&output.path), [1200]);
+    }
+
     #[test]
     fn error_after_chunks() {
         let config = columns(&[("s", "charge.description", "string")]);

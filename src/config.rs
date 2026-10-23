@@ -646,14 +646,15 @@ mod batch {
                 || self.transforms.iter().any(|t| matches!(t, Transform::Plugin(_)))
         }
 
-        /// The column's values for a batch of records; each plugin function is called once
-        /// for the batch, the other transforms once per record.
+        /// The column's values for a batch of records, owned, to go to another thread; each
+        /// plugin function is called once for the batch, the other transforms once per
+        /// record.
         pub(crate) fn values<'a>(
             &self,
             records: &'a [Record],
             metadata: &'a Metadata,
             call: &mut Call<'_>,
-        ) -> Result<Vec<Value<'a>>, Error> {
+        ) -> Result<Vec<Value<'static>>, Error> {
             let mut works: Vec<Work<'a>> = match &self.source {
                 Source::Fields(fields) => {
                     records.iter().map(|r| read(fields, r, metadata)).collect()
@@ -673,7 +674,21 @@ mod batch {
                     t => works.into_iter().map(|w| apply(t, w)).collect(),
                 };
             }
-            Ok(works.into_iter().map(|w| cast(w, self.kind)).collect())
+            Ok(works.into_iter().map(|w| cast(w, self.kind).into_owned()).collect())
+        }
+    }
+
+    impl Value<'_> {
+        fn into_owned(self) -> Value<'static> {
+            match self {
+                Value::Null => Value::Null,
+                Value::Text(s) => Value::Text(Cow::Owned(s.into_owned())),
+                Value::List(items) => Value::List(items),
+                Value::F64(x) => Value::F64(x),
+                Value::I64(x) => Value::I64(x),
+                Value::Bool(x) => Value::Bool(x),
+                Value::Date(x) => Value::Date(x),
+            }
         }
     }
 

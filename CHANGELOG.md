@@ -15,6 +15,11 @@ Notable changes to `hpt-parser`, the library and the command line. The format fo
   the same.
 - The release binaries are built with one codegen unit and thin LTO: wide CSV files 9-11%
   faster, tall ones 2-3%, JSON within the spread. The binary is 22 MB instead of 27 MB.
+- Faster on wide CSV files and with plugins: two to six threads, each with a share of the
+  columns, make and encode the values of each row group. The 2.5 GB wide CSV 3.7 -> 2.7
+  seconds, the 1.2 GB CSV with 1000 columns 7.7 -> 3.8, a 1 GB tall CSV 3.6 -> 3.3, a
+  229 MB JSON 1.3 -> 1.2; with the `examples/payer-names` config the 1000-column CSV
+  13.6 -> 5.3 and the tall CSV 4.6 -> 3.3. The Parquet bytes are the same.
 
 ## [0.1.3] - 2026-10-23
 
