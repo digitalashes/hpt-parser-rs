@@ -2,3 +2,4 @@
 /.idea
 /tests/plugin/target
 /examples/*/target
+/mutants.out*

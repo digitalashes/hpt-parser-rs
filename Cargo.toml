@@ -19,6 +19,11 @@ required-features = ["cli"]
 name = "fuzz"
 required-features = ["parquet"]
 
+[profile.mutants]
+inherits = "test"
+opt-level = 1
+debug = "none"
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
