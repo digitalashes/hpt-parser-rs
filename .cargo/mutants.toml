@@ -1,0 +1,5 @@
+# A test build at opt-level 1: the whole suite runs in a fraction of the time.
+profile = "mutants"
+# No doctests: they compile and link anew for each mutant, and the tests cover what they
+# show.
+additional_cargo_test_args = ["--all-targets"]

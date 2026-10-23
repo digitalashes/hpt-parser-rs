@@ -144,14 +144,17 @@ fn metadata() {
 #[cfg(unix)]
 mod notify {
     use super::{TALL, dir, records, text};
-    use std::io::Read;
+    use std::io::{ErrorKind, Read};
     use std::os::unix::net::UnixListener;
     use std::process::{Command, Stdio};
 
     /// The events the CLI sends for `input`, and its exit code.
     fn events(name: &str, input: &str) -> (Vec<serde_json::Value>, Option<i32>) {
         let dir = dir(name);
-        let socket = dir.join("s.sock");
+        // A socket path has at most 104 bytes on macOS, which a deep checkout's target
+        // directory passes.
+        let socket = std::env::temp_dir().join(format!("hpt-{name}-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
         let listener = UnixListener::bind(&socket).unwrap();
         let out = dir.join("t.parquet");
         let mut child = Command::new(env!("CARGO_BIN_EXE_hpt-parser"))
@@ -160,8 +163,21 @@ mod notify {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
+        // Polled, so that a CLI that exits without connecting fails the test, not hangs it.
+        listener.set_nonblocking(true).unwrap();
+        let mut stream = loop {
+            let exited = child.try_wait().unwrap().is_some();
+            match listener.accept() {
+                Err(e) if e.kind() == ErrorKind::WouldBlock && !exited => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                accepted => break accepted.unwrap().0,
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
         let mut lines = String::new();
-        listener.accept().unwrap().0.read_to_string(&mut lines).unwrap();
+        stream.read_to_string(&mut lines).unwrap();
+        let _ = std::fs::remove_file(&socket);
         let code = child.wait().unwrap().code();
         (lines.lines().map(|l| serde_json::from_str(l).unwrap()).collect(), code)
     }
