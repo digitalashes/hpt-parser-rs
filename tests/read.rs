@@ -160,8 +160,41 @@ fn header_errors() {
     assert_eq!(message(error_csv("a\nb\n\nx\n")), (3, "row 3 (the column names) is blank".into()));
     let both = "a\nb\npayer_name,plan_name,count | Acme | PPO\n";
     assert!(message(error_csv(both)).1.contains("has both payer_name"));
-    let neither = "a\nb\ndescription,payer_name,standard_charge | Acme | negotiated_dollar\n";
+    let neither = "a\nb\ndescription,payer_name,standard_charge | negotiated_dollar\n";
     assert!(message(error_csv(neither)).1.contains("has neither payer_name"));
+}
+
+#[test]
+fn template_placeholders() {
+    // A tall file with a template's wide column left in: the column is not read.
+    let input = "a\nb\ndescription,payer_name,plan_name,count | [payer_name] | [plan_name]\n\
+        Visit,Acme,PPO,9\n";
+    let mut parser = Parser::new(input.as_bytes(), Format::Csv);
+    let record = parser.next().unwrap().unwrap();
+    assert_eq!(record.payer, Some(with!(Payer { name: s("Acme"), plan: s("PPO") })));
+    assert_eq!(parser.metadata().layout, Some(Layout::Tall));
+}
+
+#[test]
+fn payer_without_plan() {
+    let input = "a\nb\ndescription,standard_charge | Acme | negotiated_dollar,\
+        estimated_amount | Acme,standard_charge | Beta | HMO | negotiated_dollar\n\
+        Visit,100,90,200\n";
+    let mut parser = Parser::new(input.as_bytes(), Format::Csv);
+    let records = parser.by_ref().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(parser.metadata().layout, Some(Layout::Wide));
+    let payers: Vec<_> = records.into_iter().map(|r| r.payer).collect();
+    assert_eq!(
+        payers,
+        [
+            Some(with!(Payer { name: s("Acme"), dollar: s("100"), estimated_amount: s("90") })),
+            Some(with!(Payer { name: s("Beta"), plan: s("HMO"), dollar: s("200") })),
+        ]
+    );
+    // In a tall file such a column is not read.
+    let tall = "a\nb\ndescription,payer_name,plan_name,count | Acme\nVisit,Beta,HMO,9\n";
+    let record = Parser::new(tall.as_bytes(), Format::Csv).next().unwrap().unwrap();
+    assert_eq!(record.payer, Some(with!(Payer { name: s("Beta"), plan: s("HMO") })));
 }
 
 #[test]

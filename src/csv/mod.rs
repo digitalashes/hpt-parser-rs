@@ -4,7 +4,8 @@
 //!
 //! A tall file has one row per item and payer/plan, named in `payer_name` and `plan_name`.
 //! A wide file has one row per item and a column block per payer/plan, the payer and plan
-//! written into the column names: `standard_charge | <payer> | <plan> | negotiated_dollar`.
+//! written into the column names: `standard_charge | <payer> | <plan> | negotiated_dollar`,
+//! or `standard_charge | <payer> | negotiated_dollar` in files that leave the plan out.
 
 mod reader;
 
@@ -218,7 +219,10 @@ impl Columns {
         let keys: Vec<String> = names.iter().map(|n| key(n)).collect();
         let payer: Vec<_> = names.iter().map(|n| payer_column(n)).collect();
         let tall = [Kind::Name, Kind::Plan].iter().all(|k| payer.contains(&Some((*k, None))));
-        let wide = payer.iter().any(|p| matches!(p, Some((_, Some(_)))));
+        // A payer without a plan makes a file wide only when it is not tall.
+        let wide = payer
+            .iter()
+            .any(|p| matches!(p, Some((_, Some((_, plan)))) if !tall || !plan.is_empty()));
         if tall == wide {
             return Err(if tall {
                 "row 3 has both payer_name and plan_name (tall) and payer-specific columns (wide)"
@@ -244,7 +248,7 @@ impl Columns {
                 // A payer column of the other layout is not read.
                 let slot = match payer {
                     Some((kind, None)) if tall => Slot::Payer(0, kind),
-                    Some((kind, Some((name, plan)))) => {
+                    Some((kind, Some((name, plan)))) if !tall => {
                         let key = format!("{name} | {plan}").to_lowercase();
                         let block = *block_index.entry(key).or_insert_with(|| {
                             blocks.push((non_empty(name), non_empty(plan)));
@@ -353,7 +357,9 @@ fn column(key: &str) -> Option<Slot> {
 /// A payer-specific column's field, with the payer and plan in a wide file's names:
 /// `standard_charge | negotiated_dollar` or `count` in a tall file,
 /// `standard_charge | <payer> | <plan> | negotiated_dollar` or `count | <payer> | <plan>`
-/// in a wide one.
+/// in a wide one. Some wide files name a payer without a plan,
+/// `standard_charge | <payer> | negotiated_dollar` or `count | <payer>`: the plan is empty.
+/// A template's `[payer_name]` or `[plan_name]` left in a name is no payer.
 fn payer_column(name: &str) -> Option<(Kind, Option<(&str, &str)>)> {
     let up = |s: &str| s.to_uppercase();
     let charge = |s: &str| match up(s).as_str() {
@@ -372,6 +378,8 @@ fn payer_column(name: &str) -> Option<(Kind, Option<(&str, &str)>)> {
         "COUNT" => Some(Kind::Count),
         _ => None,
     };
+    let placeholder = |s: &str| ["[PAYER_NAME]", "[PLAN_NAME]"].contains(&up(s).as_str());
+    let block = |payer, plan| (!placeholder(payer) && !placeholder(plan)).then_some((payer, plan));
     match parts(name).collect::<Vec<_>>()[..] {
         [a] => match up(a).as_str() {
             "PAYER_NAME" => Some((Kind::Name, None)),
@@ -379,10 +387,14 @@ fn payer_column(name: &str) -> Option<(Kind, Option<(&str, &str)>)> {
             _ => Some((amount(a)?, None)),
         },
         [sc, c] if up(sc) == "STANDARD_CHARGE" => Some((charge(c)?, None)),
-        [sc, payer, plan, c] if up(sc) == "STANDARD_CHARGE" => {
-            Some((charge(c)?, Some((payer, plan))))
+        [a, payer] => Some((amount(a)?, Some(block(payer, "")?))),
+        [sc, payer, c] if up(sc) == "STANDARD_CHARGE" => {
+            Some((charge(c)?, Some(block(payer, "")?)))
         }
-        [a, payer, plan] => Some((amount(a)?, Some((payer, plan)))),
+        [sc, payer, plan, c] if up(sc) == "STANDARD_CHARGE" => {
+            Some((charge(c)?, Some(block(payer, plan)?)))
+        }
+        [a, payer, plan] => Some((amount(a)?, Some(block(payer, plan)?))),
         _ => None,
     }
 }
