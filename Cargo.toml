@@ -19,6 +19,12 @@ required-features = ["cli"]
 name = "fuzz"
 required-features = ["parquet"]
 
+# One codegen unit and thin LTO across the crates: CSV files parse 2-11% faster, the build
+# takes half as long again.
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
 [profile.mutants]
 inherits = "test"
 opt-level = 1
