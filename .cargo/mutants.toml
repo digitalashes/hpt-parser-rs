@@ -3,3 +3,50 @@ profile = "mutants"
 # No doctests: they compile and link anew for each mutant, and the tests cover what they
 # show.
 additional_cargo_test_args = ["--all-targets"]
+
+# Mutants that change no output, only speed or buffer reuse, or change code this build
+# leaves out.
+exclude_re = [
+    # Off unix only: there the guard holds, the arm after it is never reached and
+    # `connect` is another function.
+    'replace match guard cfg!\(unix\) with true in parse',
+    'main\.rs:135:13: delete match arm "--notify-socket" in parse',
+    'replace connect -> io::Result<Box<dyn Write>> with Ok\(Box::new\(Default::default\(\)\)\)',
+    # Without the `plugins` feature only.
+    'parquet/mod\.rs:205:8: delete ! in write',
+    # The batch path gives the values the row path does.
+    'replace batch::Column::has_plugins -> bool with true',
+    # A change counted at every item only ends more batches early.
+    'json/mod\.rs:\d+:\d+: replace > with >= in Parser<R>::fill',
+    # An open file has a record.
+    'replace > with >= in Files<.+>::row',
+    # The pages are in memory: flushing them does nothing.
+    'replace <impl PageWriter for PageSink>::close',
+    # The batch size only sets how often the buffers go to the encoder.
+    'group\.rs:165:20: replace \+= with \*= in Group::push',
+    'replace == with != in Group::push',
+    # The lossy pass gives the same text for an input cut short.
+    'replace match guard e.error_len\(\).is_none\(\) with false in decode',
+    # Buffer reuse: a fresh buffer instead.
+    'replace Parser<R>::recycle with \(\)',
+    'Spare::keep',
+    # The member-name length filter only saves comparisons; there is one item path.
+    'replace match guard o.lengths & length_bit\(name\) != 0 with true in Value::get',
+    'replace & with \| in Value::get',
+    'replace length_bit -> u64 with 1',
+    'replace % with / in length_bit',
+    'replace \| with \^ in Parser<R>::with_chunk',
+    # So do the item-depth and alias-length filters.
+    'replace & with \| in Tokens::token',
+    # Empty spans read as empty fields.
+    'replace < with <= in Parsed::push',
+    # Searching for a newline before parse_row only saves parse attempts.
+    'replace == with != in Reader<R>::next_row',
+    'reader\.rs:116:17: replace \|\| with && in Reader<R>::next_row',
+    # Two masks never share their lowest set bit, and the empty-run fast path and the
+    # past-the-end filter only save work.
+    'replace \| with \^ in parse_row',
+    'replace \^ with \| in parse_row',
+    'replace > with < in parse_row',
+    'replace < with <= in scan',
+]
