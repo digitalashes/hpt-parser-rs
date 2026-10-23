@@ -218,13 +218,13 @@ pub fn write<R: Read>(
             })
         })?;
     } else {
-        rows(&mut parser, &mut files, &mut first, &mut on_chunk, |files, mut batch, metadata| {
-            config.filter(&mut batch, metadata, call)?;
+        rows(&mut parser, &mut files, &mut first, &mut on_chunk, |files, batch, metadata| {
+            config.filter(batch, metadata, call)?;
             // Columns with plugins for the whole batch, the others record by record: every
             // column a batch at a time cost nyp 6% (1.73 s became 1.83 s).
             let mut batched = Vec::with_capacity(config.columns.len());
             for c in &config.columns {
-                let values = c.has_plugins().then(|| c.values(&batch, metadata, call));
+                let values = c.has_plugins().then(|| c.values(batch, metadata, call));
                 batched.push(values.transpose()?.map(Vec::into_iter));
             }
             batch.iter().try_for_each(|record| {
@@ -263,23 +263,28 @@ pub fn write<R: Read>(
 }
 
 /// Reads the records in batches; a thread of its own hands each batch to `make`, which
-/// makes its rows, while the next batch is read. A batch ends early where the metadata
-/// changes, so that each row has the metadata its record was read with. The files the
-/// thread closes come back here for `on_chunk`. A parser error still has the records before
-/// it written first.
+/// makes its rows, while the next batch is read, and a third one drops the batch after (its
+/// strings took a third of the rows thread on tall files). A batch ends early where the
+/// metadata changes, so that each row has the metadata its record was read with. The files
+/// the thread closes come back here for `on_chunk`. A parser error still has the records
+/// before it written first.
 fn rows<'o, R: Read>(
     parser: &mut Parser<R>,
     files: &mut Files<'o>,
     first: &mut Option<(Record, Metadata)>,
     on_chunk: &mut impl FnMut(&Chunk),
-    mut make: impl FnMut(&mut Files<'o>, Vec<Record>, &Metadata) -> Result<(), Error> + Send,
+    mut make: impl FnMut(&mut Files<'o>, &mut Vec<Record>, &Metadata) -> Result<(), Error> + Send,
 ) -> Result<(), Error> {
     let (to_rows, batches) = mpsc::sync_channel::<(Vec<Record>, Arc<Metadata>)>(1);
+    let (to_drop, done) = mpsc::sync_channel::<Vec<Record>>(1);
     let (to_caller, closed) = mpsc::channel();
     thread::scope(|s| {
+        s.spawn(move || done.into_iter().for_each(drop));
         let writer = s.spawn(move || {
-            for (records, metadata) in batches {
-                let written = make(files, records, &metadata);
+            for (mut records, metadata) in batches {
+                let written = make(files, &mut records, &metadata);
+                // The dropping thread ends only after this one.
+                _ = to_drop.send(records);
                 // The caller is gone only when it panicked.
                 for c in files.closed.drain(..) {
                     _ = to_caller.send(c);
