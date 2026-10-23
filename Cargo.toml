@@ -15,6 +15,10 @@ name = "hpt-parser"
 path = "src/main.rs"
 required-features = ["cli"]
 
+[[test]]
+name = "fuzz"
+required-features = ["parquet"]
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
