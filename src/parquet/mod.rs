@@ -8,6 +8,7 @@
 mod group;
 
 use crate::config::{self, Call, Column, Config, Type, plugin_error};
+use crate::csv;
 use crate::json::{self, Value};
 use crate::{Error, Item, Metadata, Parser, Record};
 use ::parquet::basic::{
@@ -258,12 +259,13 @@ pub fn write<R: Read>(
     Ok(summary)
 }
 
-/// Reads the records in batches; a thread of its own hands each batch to `make`, which
-/// writes its rows, while the next batch is read. A JSON batch is of charge items, which
-/// that thread makes into records (a third of the reading), and their values come back here
-/// to be reused. A batch ends early where the metadata changes, so that each row has the
-/// metadata its record was read with. The files the thread closes come back here for
-/// `on_chunk`. A parser error still has the records before it written first.
+/// Reads the records in batches while a thread of its own makes the records of the batch
+/// before (half to two thirds of the reading for CSV, a third for JSON) and another hands
+/// them to `make`, which writes their rows. CSV rows' records are cut into batches of 512;
+/// a JSON batch is of charge items, whose values come back here to be reused. A batch ends
+/// early where the metadata changes, so that each row has the metadata its record was read
+/// with. The files the writing thread closes come back here for `on_chunk`. A parser
+/// error still has the records before it written first.
 fn rows<'o, R: Read>(
     parser: &mut Parser<R>,
     files: &mut Files<'o>,
@@ -271,22 +273,14 @@ fn rows<'o, R: Read>(
     on_chunk: &mut impl FnMut(&Chunk),
     mut make: impl FnMut(&mut Files<'o>, Vec<Record>, Arc<Metadata>) -> Result<(), Error> + Send,
 ) -> Result<(), Error> {
-    let (to_rows, batches) = mpsc::sync_channel::<(Vec<Record>, Items, Arc<Metadata>)>(1);
+    let (to_records, read) = mpsc::sync_channel::<(Vec<csv::Rows>, Items, Arc<Metadata>)>(1);
+    let (to_rows, batches) = mpsc::sync_channel::<(Vec<Record>, Arc<Metadata>)>(1);
     let (to_caller, closed) = mpsc::channel();
     let (to_reuse, done) = mpsc::channel::<Items>();
     thread::scope(|s| {
+        s.spawn(move || records(read, &to_rows, &to_reuse));
         let writer = s.spawn(move || {
-            for (mut records, items, metadata) in batches {
-                if !items.is_empty() {
-                    let mut pending = VecDeque::with_capacity(BATCH);
-                    for (value, position) in &items {
-                        json::item(value, *position, &mut pending);
-                    }
-                    records = pending.into();
-                    // Taking the values apart here, while still in this thread's cache, saved
-                    // the caller's thread 17% but overloaded this one where it calls plugins.
-                    _ = to_reuse.send(items);
-                }
+            for (records, metadata) in batches {
                 if first.is_none()
                     && let Some(record) = records.first()
                 {
@@ -302,8 +296,8 @@ fn rows<'o, R: Read>(
             Ok(())
         });
         let (mut batch, mut items) = (Vec::new(), Vec::new());
-        // The records in `batch` and `items`. A JSON item's records stay in one batch, the
-        // next one if they do not fit.
+        // The records in `items`, CSV rows in `batch` counting as a whole batch. A JSON item's
+        // records stay in one batch, the next one if they do not fit.
         let mut size = 0;
         // The metadata the records in `batch` were read with, and the parser's count of
         // changes to it then.
@@ -312,7 +306,7 @@ fn rows<'o, R: Read>(
             let next = parser.next_item();
             let records = match &next {
                 Some(Ok(Item::Json(value, _))) => json::records(value),
-                _ => 1,
+                _ => BATCH,
             };
             let changes = parser.metadata_changes();
             let stale = seen.as_ref().is_some_and(|(n, _)| *n != changes);
@@ -324,7 +318,7 @@ fn rows<'o, R: Read>(
                     (std::mem::take(&mut batch), std::mem::take(&mut items), metadata.clone());
                 size = 0;
                 // Fails only when the writer stopped, on an error it returns below.
-                if to_rows.send(full).is_err() {
+                if to_records.send(full).is_err() {
                     break Ok(());
                 }
                 for c in closed.try_iter() {
@@ -338,11 +332,8 @@ fn rows<'o, R: Read>(
                 seen = Some((changes, Arc::new(parser.metadata().clone())));
             }
             match next {
-                Some(Ok(Item::Record(record))) => {
-                    if batch.is_empty() {
-                        batch.reserve(BATCH);
-                    }
-                    batch.push(record);
+                Some(Ok(Item::Rows(rows))) => {
+                    batch.push(rows);
                     size += records;
                 }
                 Some(Ok(Item::Json(value, position))) => {
@@ -353,13 +344,55 @@ fn rows<'o, R: Read>(
                 None => break Ok(()),
             }
         };
-        drop(to_rows);
+        drop(to_records);
         let written = writer.join().unwrap_or_else(|p| panic::resume_unwind(p));
         for c in closed.try_iter() {
             on_chunk(&c);
         }
         written.and(read)
     })
+}
+
+/// Makes the records of each batch read and sends them on: a JSON batch's together, its
+/// values back to the caller; CSV rows' cut into batches of `BATCH`.
+fn records(
+    read: mpsc::Receiver<(Vec<csv::Rows>, Items, Arc<Metadata>)>,
+    to_rows: &mpsc::SyncSender<(Vec<Record>, Arc<Metadata>)>,
+    to_reuse: &mpsc::Sender<Items>,
+) {
+    // CSV records not sent yet, and the metadata they were read with.
+    let (mut rest, mut seen) = (VecDeque::new(), None);
+    // Each send fails only when the writer stopped.
+    for (rows, items, metadata) in read {
+        if items.is_empty() {
+            for r in &rows {
+                r.records(&mut rest);
+            }
+            while rest.len() >= BATCH {
+                if to_rows.send((rest.drain(..BATCH).collect(), Arc::clone(&metadata))).is_err() {
+                    return;
+                }
+            }
+            seen = Some(metadata);
+            continue;
+        }
+        let mut pending = VecDeque::with_capacity(BATCH);
+        for (value, position) in &items {
+            json::item(value, *position, &mut pending);
+        }
+        // Taking the values apart on the thread that made the records, while still in its
+        // cache, saved the caller's thread 17% when that thread also called the plugins, but
+        // overloaded it.
+        _ = to_reuse.send(items);
+        if to_rows.send((pending.into(), metadata)).is_err() {
+            return;
+        }
+    }
+    if let Some(metadata) = seen
+        && !rest.is_empty()
+    {
+        _ = to_rows.send((rest.into(), metadata));
+    }
 }
 
 /// The files closed so far and the one being written.

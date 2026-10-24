@@ -32,6 +32,9 @@ exclude_re = [
     'replace batch::Column::per_charge -> bool with false',
     # The thread a batch is dropped on.
     'replace Group::free with \(\)',
+    # The size of a lot of CSV rows: their records are cut into batches of 512 anyway.
+    'csv/mod\.rs:\d+:\d+: replace \* with \+',
+    'replace < with <= in Parser<R>::next_rows',
     # The lossy pass gives the same text for an input cut short.
     'replace match guard e.error_len\(\).is_none\(\) with false in decode',
     # Buffer reuse: a fresh buffer instead.

@@ -290,6 +290,49 @@ A,99213,CPT,25|59,1.5,7,2026-01-02,yes,10,20
     }
 
     #[test]
+    fn csv_error_after_rows() {
+        use std::io::{self, Read};
+        /// The input, then an IO error.
+        struct Broken<'a>(&'a [u8]);
+        impl Read for Broken<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                match self.0.read(buf)? {
+                    0 => Err(io::Error::other("broken")),
+                    n => Ok(n),
+                }
+            }
+        }
+        // The error comes when the reader needs more than the first 64 KiB, the last row in
+        // them cut off.
+        let cut = |rows: &[&str]| {
+            let mut input = HEADER.to_string();
+            for d in rows {
+                writeln!(input, "{d},,,,Acme,PPO,,,,").unwrap();
+            }
+            input.push_str("D,");
+            input.push_str(&"x".repeat(64 * 1024 - input.len()));
+            input
+        };
+        let config = columns(&[("s", "charge.description", "string")]);
+        let dir = dir("csv-error");
+        let mut output = Output::new(dir.join("out.parquet"));
+        output.chunk_size = 1;
+        let mut chunks = Vec::new();
+        // All three rows come out before the error (C closes B's file).
+        let input = cut(&["A", "B", "C"]);
+        let parser = Parser::new(Broken(input.as_bytes()), Format::Csv);
+        let written = write(parser, &config, &output, |c| chunks.push(c.index));
+        assert!(matches!(written, Err(Error::Io(_))), "{written:?}");
+        assert_eq!(chunks, [1, 2]);
+        assert_eq!(rows(&dir.join("out-00002.parquet")), [r#"{s: "B"}"#]);
+        // With no row before it, the error comes at once.
+        let input = cut(&[]);
+        let parser = Parser::new(Broken(input.as_bytes()), Format::Csv);
+        let written = write(parser, &config, &output, |_| {});
+        assert!(matches!(written, Err(Error::Io(_))), "{written:?}");
+    }
+
+    #[test]
     fn footer_metadata() {
         let config = columns(&[("s", "charge.description", "string")]);
         let path = dir("footer").join("out.parquet");

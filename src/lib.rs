@@ -386,19 +386,20 @@ impl<R: Read> Parser<R> {
         }
     }
 
-    /// The next record, or for JSON the next charge item with its records still to make
-    /// ([`json::item`]), so that another thread makes them while the next item is read.
+    /// The next CSV data rows or JSON charge item with their records still to make
+    /// ([`csv::Rows::records`], [`json::item`]), so that another thread makes them while the
+    /// next ones are read.
     #[cfg(feature = "parquet")]
     pub(crate) fn next_item(&mut self) -> Option<Result<Item, Error>> {
-        let Inner::Json(p) = &mut self.inner else {
-            return self.next().map(|r| r.map(Item::Record));
-        };
         if self.done {
             return None;
         }
-        let next = p.next_item();
+        let next = match &mut self.inner {
+            Inner::Csv(p) => p.next_rows().map(|r| r.map(Item::Rows)),
+            Inner::Json(p) => p.next_item().map(|r| r.map(|(value, at)| Item::Json(value, at))),
+        };
         self.done = !matches!(next, Ok(Some(_)));
-        next.transpose().map(|r| r.map(|(value, position)| Item::Json(value, position)))
+        next.transpose()
     }
 
     /// Hands back a JSON item's value once its records are made.
@@ -412,9 +413,8 @@ impl<R: Read> Parser<R> {
 
 /// What [`Parser::next_item`] reads.
 #[cfg(feature = "parquet")]
-#[expect(clippy::large_enum_variant, reason = "moved once per record, boxing it a malloc")]
 pub(crate) enum Item {
-    Record(Record),
+    Rows(csv::Rows),
     /// A charge item and its position.
     Json(json::Value, u64),
 }

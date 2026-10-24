@@ -13,15 +13,52 @@ use crate::{Aliases, Charge, Code, Error, Layout, Metadata, Payer, Record, text}
 use reader::Reader;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::Read;
+use std::sync::Arc;
+
+/// Bytes of cells in a [`Rows`].
+#[cfg(feature = "parquet")]
+const ROWS: usize = 64 * 1024;
 
 pub struct Parser<R> {
     reader: Reader<R>,
     pub metadata: Metadata,
     pub aliases: Aliases,
     /// Set once rows 1 to 3 are read.
-    columns: Option<Columns>,
+    columns: Option<Arc<Columns>>,
     /// One entry per payer/plan block, `None` between rows.
     payers: Vec<Option<Payer>>,
+    /// An error met after the rows `next_rows` returned last.
+    #[cfg(feature = "parquet")]
+    error: Option<Error>,
+}
+
+/// Data rows copied out of the reader, so that another thread makes their records.
+#[cfg(feature = "parquet")]
+pub(crate) struct Rows {
+    columns: Arc<Columns>,
+    /// The rows' non-empty cells back to back.
+    text: String,
+    /// Each cell's index and byte range in `text`.
+    cells: Vec<(usize, usize, usize)>,
+    /// Each row's line and the end of its cells in `cells`.
+    lines: Vec<(u64, usize)>,
+}
+
+#[cfg(feature = "parquet")]
+impl Rows {
+    /// Queues the rows' records, as `Parser::fill` does.
+    pub(crate) fn records(&self, pending: &mut VecDeque<Record>) {
+        let mut payers = vec![None; self.columns.blocks.len()];
+        let mut from = 0;
+        for &(line, to) in &self.lines {
+            let cells =
+                self.cells[from..to].iter().map(|&(i, start, end)| (i, &self.text[start..end]));
+            from = to;
+            if let Some(charge) = self.columns.record(cells, &mut payers) {
+                crate::fan_out(pending, charge, payers.iter_mut().filter_map(Option::take), line);
+            }
+        }
+    }
 }
 
 /// Where row 3 puts each field.
@@ -78,14 +115,55 @@ impl<R: Read> Parser<R> {
             aliases: Aliases::default(),
             columns: None,
             payers: Vec::new(),
+            #[cfg(feature = "parquet")]
+            error: None,
         }
+    }
+
+    /// The next data rows, about 64 KiB of cells; `None` at the end. An IO error comes after
+    /// the rows read before it.
+    #[cfg(feature = "parquet")]
+    pub fn next_rows(&mut self) -> Result<Option<Rows>, Error> {
+        if let Some(e) = self.error.take() {
+            return Err(e);
+        }
+        if self.columns.is_none() {
+            self.columns = Some(Arc::new(self.header()?));
+        }
+        let columns = Arc::clone(self.columns.as_ref().expect("set above"));
+        let mut rows = Rows {
+            columns,
+            text: String::with_capacity(ROWS),
+            cells: Vec::new(),
+            lines: Vec::new(),
+        };
+        while rows.text.len() < ROWS {
+            match self.reader.next_row() {
+                Ok(Some(row)) => {
+                    let line = row.line;
+                    for (i, cell) in row.non_empty() {
+                        let start = rows.text.len();
+                        rows.text.push_str(cell);
+                        rows.cells.push((i, start, rows.text.len()));
+                    }
+                    rows.lines.push((line, rows.cells.len()));
+                }
+                Ok(None) => break,
+                Err(e) if rows.lines.is_empty() => return Err(e.into()),
+                Err(e) => {
+                    self.error = Some(e.into());
+                    break;
+                }
+            }
+        }
+        Ok((!rows.lines.is_empty()).then_some(rows))
     }
 
     /// Reads up to the next data row that is not blank and queues its records; false at
     /// the end.
     pub fn fill(&mut self, pending: &mut VecDeque<Record>) -> Result<bool, Error> {
         if self.columns.is_none() {
-            self.columns = Some(self.header()?);
+            self.columns = Some(Arc::new(self.header()?));
         }
         let columns = self.columns.as_ref().expect("set above");
         while let Some(row) = self.reader.next_row()? {

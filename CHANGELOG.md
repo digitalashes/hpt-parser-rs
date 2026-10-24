@@ -43,6 +43,15 @@ Notable changes to `hpt-parser`, the library and the command line. The format fo
   token parser. A 229 MB JSON 1.01 -> 0.79 seconds, a 96 MB one 0.44 -> 0.38, and 8-19% on
   five other JSON files of 40-310 MB; with the `examples/payer-names` config 2-4%. The
   Parquet bytes are the same.
+- Faster on CSV files: the main thread only reads and splits the rows, and a thread of its
+  own makes their records, as it does a JSON file's (so that the thread calling plugins
+  does not). A 1 GB tall CSV 3.30 -> 2.75 seconds, a 1.3 GB one 5.77 -> 4.60, the 2.5 GB
+  wide CSV 2.70 -> 2.33, the 1.2 GB CSV with 1000 columns 3.70 -> 3.18; a 229 MB JSON with
+  the `examples/payer-names` config 1.00 -> 0.84. CSV files with plugins are as before.
+  CPU time is 13-21% higher on CSV files, peak memory up to 6 MB higher. JSON files
+  without plugins took 5-10% longer in this build, a matter of code layout: built with
+  branches kept within 32-byte boundaries, the two builds are even. The Parquet bytes are
+  the same.
 
 ### Fixed
 
