@@ -366,21 +366,21 @@ impl Columns {
             }
             blank = false;
             let Some(&Some(slot)) = self.slots.get(i) else { continue };
-            let v = Some(cell.to_owned());
+            let v = || Some(cell.to_owned());
             match slot {
-                Slot::Description => charge.description = v,
-                Slot::Setting => charge.setting = v,
-                Slot::BillingClass => charge.billing_class = v,
-                Slot::DrugUnit => charge.drug_unit = v,
-                Slot::DrugUnitType => charge.drug_unit_type = v,
+                Slot::Description => charge.description = v(),
+                Slot::Setting => charge.setting = v(),
+                Slot::BillingClass => charge.billing_class = v(),
+                Slot::DrugUnit => charge.drug_unit = v(),
+                Slot::DrugUnitType => charge.drug_unit_type = v(),
                 Slot::Modifiers => charge.modifiers = text::split(cell, "|"),
-                Slot::Gross => charge.gross_charge = v,
-                Slot::DiscountedCash => charge.discounted_cash = v,
-                Slot::Minimum => charge.minimum = v,
-                Slot::Maximum => charge.maximum = v,
-                Slot::Notes => charge.notes = v,
-                Slot::Code(k) => codes[k].0 = v,
-                Slot::CodeType(k) => codes[k].1 = v,
+                Slot::Gross => charge.gross_charge = v(),
+                Slot::DiscountedCash => charge.discounted_cash = v(),
+                Slot::Minimum => charge.minimum = v(),
+                Slot::Maximum => charge.maximum = v(),
+                Slot::Notes => charge.notes = v(),
+                Slot::Code(k) => codes[k].0 = v(),
+                Slot::CodeType(k) => codes[k].1 = v(),
                 Slot::Payer(b, kind) => {
                     let payer = payers[b].get_or_insert_with(|| {
                         let (name, plan) = self.blocks[b].clone();
@@ -400,7 +400,7 @@ impl Columns {
                         Kind::Percentile90th => &mut payer.percentile_90th,
                         Kind::Count => &mut payer.count,
                     };
-                    *field = v;
+                    *field = v();
                 }
             }
         }

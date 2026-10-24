@@ -217,22 +217,15 @@ pub fn write<R: Read>(
     #[cfg(not(feature = "plugins"))]
     let call: &mut Call = &mut |_, _| unreachable!("no plugins");
     let mut first = None;
-    // Without a filter or a column with plugins (`[[metadata]]` alone runs at the end).
-    if config.filters.is_empty() && !config.columns.iter().any(Column::has_plugins) {
-        rows(&mut parser, &mut files, &mut first, &mut on_chunk, |files, records, metadata| {
-            files.rows(Batch { records, metadata, plugin: Vec::new() })
-        })?;
-    } else {
-        rows(&mut parser, &mut files, &mut first, &mut on_chunk, |files, mut batch, metadata| {
-            config.filter(&mut batch, &metadata, call)?;
-            // Columns with plugins for the whole batch, the others record by record on the
-            // workers: every column a batch at a time cost nyp 6% (1.73 s became 1.83 s).
-            let plugin = (config.columns.iter())
-                .map(|c| c.has_plugins().then(|| c.values(&batch, &metadata, call)).transpose())
-                .collect::<Result<_, _>>()?;
-            files.rows(Batch { records: batch, metadata, plugin })
-        })?;
-    }
+    rows(&mut parser, &mut files, &mut first, &mut on_chunk, |files, mut batch, metadata| {
+        config.filter(&mut batch, &metadata, call)?;
+        // Columns with plugins for the whole batch, the others record by record on the
+        // workers: every column a batch at a time cost nyp 6% (1.73 s became 1.83 s).
+        let plugin = (config.columns.iter())
+            .map(|c| c.has_plugins().then(|| c.values(&batch, &metadata, call)).transpose())
+            .collect::<Result<_, _>>()?;
+        files.rows(Batch { records: batch, metadata, plugin })
+    })?;
     let mut metadata = Cow::Borrowed(parser.metadata());
     for function in &config.metadata {
         #[derive(serde::Deserialize)]

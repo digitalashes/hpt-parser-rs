@@ -30,7 +30,7 @@ const WORKERS: usize = 6;
 pub(super) struct Batch {
     pub(super) records: Vec<Record>,
     pub(super) metadata: Arc<Metadata>,
-    /// A column's values when it has plugins, by column; empty without plugins.
+    /// Each column's values when it has plugins, by column.
     pub(super) plugin: Vec<Option<Vec<Value<'static>>>>,
 }
 

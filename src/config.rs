@@ -312,7 +312,7 @@ impl Config {
         let mut columns = Vec::new();
         for c in raw.column {
             let name = c.name.clone();
-            if !names.insert(c.name.clone()) {
+            if !names.insert(name.clone()) {
                 return Err(error(format!("column `{name}` is defined twice")));
             }
             let column = column(c, &raw.plugin);
@@ -528,18 +528,18 @@ const FIELDS: &[(&str, Get)] = &[
     ("charge.minimum", |r, _| text(r.charge.minimum.as_deref())),
     ("charge.maximum", |r, _| text(r.charge.maximum.as_deref())),
     ("charge.notes", |r, _| text(r.charge.notes.as_deref())),
-    ("payer.name", |r, _| text(payer(r, |p| p.name.as_deref()))),
-    ("payer.plan", |r, _| text(payer(r, |p| p.plan.as_deref()))),
-    ("payer.dollar", |r, _| text(payer(r, |p| p.dollar.as_deref()))),
-    ("payer.percentage", |r, _| text(payer(r, |p| p.percentage.as_deref()))),
-    ("payer.algorithm", |r, _| text(payer(r, |p| p.algorithm.as_deref()))),
-    ("payer.methodology", |r, _| text(payer(r, |p| p.methodology.as_deref()))),
-    ("payer.estimated_amount", |r, _| text(payer(r, |p| p.estimated_amount.as_deref()))),
-    ("payer.median_amount", |r, _| text(payer(r, |p| p.median_amount.as_deref()))),
-    ("payer.percentile_10th", |r, _| text(payer(r, |p| p.percentile_10th.as_deref()))),
-    ("payer.percentile_90th", |r, _| text(payer(r, |p| p.percentile_90th.as_deref()))),
-    ("payer.count", |r, _| text(payer(r, |p| p.count.as_deref()))),
-    ("payer.notes", |r, _| text(payer(r, |p| p.notes.as_deref()))),
+    ("payer.name", |r, _| payer(r, |p| p.name.as_deref())),
+    ("payer.plan", |r, _| payer(r, |p| p.plan.as_deref())),
+    ("payer.dollar", |r, _| payer(r, |p| p.dollar.as_deref())),
+    ("payer.percentage", |r, _| payer(r, |p| p.percentage.as_deref())),
+    ("payer.algorithm", |r, _| payer(r, |p| p.algorithm.as_deref())),
+    ("payer.methodology", |r, _| payer(r, |p| p.methodology.as_deref())),
+    ("payer.estimated_amount", |r, _| payer(r, |p| p.estimated_amount.as_deref())),
+    ("payer.median_amount", |r, _| payer(r, |p| p.median_amount.as_deref())),
+    ("payer.percentile_10th", |r, _| payer(r, |p| p.percentile_10th.as_deref())),
+    ("payer.percentile_90th", |r, _| payer(r, |p| p.percentile_90th.as_deref())),
+    ("payer.count", |r, _| payer(r, |p| p.count.as_deref())),
+    ("payer.notes", |r, _| payer(r, |p| p.notes.as_deref())),
     ("record.position", |r, _| Work::Text(Cow::Owned(r.position.to_string()))),
     ("metadata.layout", |_, m| text(m.layout.map(Layout::name))),
     ("metadata.version", |_, m| text(m.version.as_deref())),
@@ -555,8 +555,8 @@ const FIELDS: &[(&str, Get)] = &[
     ("metadata.attester_name", |_, m| text(m.attester_name.as_deref())),
 ];
 
-fn payer(r: &Record, get: fn(&crate::Payer) -> Option<&str>) -> Option<&str> {
-    r.payer.as_ref().and_then(get)
+fn payer(r: &Record, get: fn(&crate::Payer) -> Option<&str>) -> Work<'_> {
+    text(r.payer.as_ref().and_then(get))
 }
 
 impl Field {
