@@ -715,6 +715,9 @@ mod tests {
         assert_eq!(run("string", exact, "inpatien"), t("inpatien"));
         assert_eq!(run("string", fuzzy, "inpatien"), t("inpatient"));
         assert_eq!(run("string", fuzzy, "patient"), t("patient"));
+        // Text lowercases as Unicode does: `İ` becomes `i` and a combining dot, 9 of 10 alike.
+        let close = "{ match = \"setting\", fuzzy = 0.895 }";
+        assert_eq!(run("string", close, "İNPATIENT"), t("inpatient"));
         assert_eq!(run("string", "{ match = \"code_type\" }", "ms-drg"), t("MS-DRG"));
         assert_eq!(
             run("string", "{ match = \"methodology\", fuzzy = 0.8 }", "fee-schedule"),

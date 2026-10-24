@@ -16,21 +16,32 @@ pub(super) fn flat(work: Work<'_>) -> Option<Cow<'_, str>> {
 }
 
 pub(super) fn apply<'a>(t: &Transform, work: Work<'a>) -> Work<'a> {
-    let each = |work: Work<'a>, f: &dyn Fn(String) -> String| match work {
-        Work::Text(s) => Work::Text(Cow::Owned(f(s.into_owned()))),
-        Work::List(list) => Work::List(list.into_iter().map(f).collect()),
+    // A text a transform leaves as it is stays borrowed.
+    let each = |work: Work<'a>, f: &dyn Fn(Cow<'a, str>) -> Cow<'a, str>| match work {
+        Work::Text(s) => Work::Text(f(s)),
+        Work::List(list) => {
+            Work::List(list.into_iter().map(|s| f(Cow::Owned(s)).into_owned()).collect())
+        }
         work => work,
     };
+    let money = |c: char| c == '$' || c == ',' || is_space(c);
     match t {
-        Transform::Trim => each(work, &|s| trim(&s).into()),
-        Transform::Upper => each(work, &|s| s.to_uppercase()),
-        Transform::Lower => each(work, &|s| s.to_lowercase()),
-        Transform::Money => each(work, &|mut s| {
-            s.retain(|c| c != '$' && c != ',' && !is_space(c));
-            s
+        Transform::Trim => each(work, &|s| match trim(&s) {
+            t if t.len() == s.len() => s,
+            t => Cow::Owned(t.into()),
+        }),
+        Transform::Upper => each(work, &|s| Cow::Owned(s.to_uppercase())),
+        Transform::Lower => each(work, &|s| Cow::Owned(s.to_lowercase())),
+        Transform::Money => each(work, &|s| {
+            if !s.contains(money) {
+                return s;
+            }
+            let mut s = s.into_owned();
+            s.retain(|c| !money(c));
+            Cow::Owned(s)
         }),
         &Transform::Round(digits) => each(work, &|s| match trim(&s).parse::<f64>() {
-            Ok(n) if n.is_finite() => format!("{n:.digits$}"),
+            Ok(n) if n.is_finite() => Cow::Owned(format!("{n:.digits$}")),
             _ => s,
         }),
         Transform::Map(pairs) => each(work, &|s| {
@@ -40,10 +51,10 @@ pub(super) fn apply<'a>(t: &Transform, work: Work<'a>) -> Work<'a> {
                     let key = key.to_lowercase();
                     pairs.iter().find(|(_, lower, _)| *lower == key)
                 })
-                .map_or(s, |(.., to)| to.clone())
+                .map_or(s, |(.., to)| Cow::Owned(to.clone()))
         }),
         Transform::Match(values, fuzzy) => {
-            each(work, &|s| matched(values, &s, *fuzzy).map_or(s, String::from))
+            each(work, &|s| matched(values, &s, *fuzzy).map_or(s, Cow::Borrowed))
         }
         Transform::Split(sep) => match work {
             Work::Text(s) => Work::List(split(&s, sep)),
@@ -70,12 +81,14 @@ pub(super) fn apply<'a>(t: &Transform, work: Work<'a>) -> Work<'a> {
 /// The domain value equal to `s` ignoring case, or with `fuzzy` the most similar one at
 /// least that similar.
 fn matched(values: &'static [&'static str], s: &str, fuzzy: Option<f64>) -> Option<&'static str> {
-    let s = trim(s).to_lowercase();
-    // The domain values are ASCII.
-    if let Some(v) = values.iter().find(|v| v.eq_ignore_ascii_case(&s)) {
+    let s = trim(s);
+    // The domain values are ASCII, so ASCII text compares as it is.
+    let lower = (!s.is_ascii()).then(|| s.to_lowercase());
+    if let Some(v) = values.iter().find(|v| v.eq_ignore_ascii_case(lower.as_deref().unwrap_or(s))) {
         return Some(v);
     }
     let threshold = fuzzy?;
+    let s = lower.unwrap_or_else(|| s.to_ascii_lowercase());
     let (best, similarity) = (values.iter())
         .map(|v| (*v, similarity(&s, &v.to_lowercase())))
         .max_by(|a, b| a.1.total_cmp(&b.1))?;
@@ -178,11 +191,17 @@ pub(super) fn cast(work: Work<'_>, kind: Type) -> Value<'_> {
         Type::String => Some(Value::Text(s)),
         Type::F64 => t.parse::<f64>().ok().filter(|n| n.is_finite()).map(Value::F64),
         Type::I64 => t.parse().ok().map(Value::I64),
-        Type::Bool => match t.to_lowercase().as_str() {
-            "true" | "yes" | "y" | "1" => Some(Value::Bool(true)),
-            "false" | "no" | "n" | "0" => Some(Value::Bool(false)),
-            _ => None,
-        },
+        // No other char lowercases to one of these words' letters.
+        Type::Bool => {
+            let is = |words: [&str; 4]| words.iter().any(|w| w.eq_ignore_ascii_case(t));
+            if is(["true", "yes", "y", "1"]) {
+                Some(Value::Bool(true))
+            } else if is(["false", "no", "n", "0"]) {
+                Some(Value::Bool(false))
+            } else {
+                None
+            }
+        }
         Type::Date => date(t).map(Value::Date),
         Type::Json => Some(Value::Text(to_json(&s).into())),
         Type::List => Some(Value::List(split(&s, "|"))),

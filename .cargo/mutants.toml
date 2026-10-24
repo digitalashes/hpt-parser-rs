@@ -41,6 +41,8 @@ exclude_re = [
     'replace Parser<R>::recycle with \(\)',
     'replace Parser<R>::reuse with \(\)',
     'Spare::keep',
+    # A trimmed text copied instead of borrowed.
+    'replace match guard t.len\(\) == s.len\(\) with false in apply',
     'replace > with .* in Parser<R>::name',
     # The member-name length filter only saves comparisons; there is one item path.
     'replace match guard o.lengths & length_bit\(name\) != 0 with true in Value::get',
