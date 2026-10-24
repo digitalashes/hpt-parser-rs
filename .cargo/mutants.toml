@@ -22,9 +22,14 @@ exclude_re = [
     'mod\.rs:346:63: replace > with >= in Files<.+>::rows',
     # The pages are in memory: flushing them does nothing.
     'replace <impl PageWriter for PageSink>::close',
-    # The batch size only sets how often the buffers are encoded.
-    'group\.rs:258:30: replace \+= with \*= in worker',
-    'group\.rs:259:33: replace == with != in worker',
+    # The batch size only sets how often the buffers are encoded (and a charge's rows
+    # repeated).
+    'replace \+= with \*= in worker',
+    'replace == with != in worker',
+    # Without the repeat each value is made again.
+    'replace match guard again && c.per_charge with false in worker',
+    'replace > with < in worker',
+    'replace batch::Column::per_charge -> bool with false',
     # The thread a batch is dropped on.
     'replace Group::free with \(\)',
     # The lossy pass gives the same text for an input cut short.

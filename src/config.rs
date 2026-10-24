@@ -646,6 +646,18 @@ mod batch {
                 || self.transforms.iter().any(|t| matches!(t, Transform::Plugin(_)))
         }
 
+        /// Whether the column reads only `charge.*` and `metadata.*` fields, so that its value
+        /// is the same for every record of one charge read with the same metadata (with a
+        /// plugin transform the values come made for the whole batch).
+        pub(crate) fn per_charge(&self) -> bool {
+            let Source::Fields(fields) = &self.source else {
+                return false;
+            };
+            let shared =
+                |f: &Field| ["charge.", "metadata."].iter().any(|p| FIELDS[f.0].0.starts_with(p));
+            fields.iter().all(shared)
+        }
+
         /// The column's values for a batch of records, owned, to go to another thread; each
         /// plugin function is called once for the batch, the other transforms once per
         /// record.

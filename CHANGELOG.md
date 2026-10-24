@@ -20,6 +20,12 @@ Notable changes to `hpt-parser`, the library and the command line. The format fo
   seconds, the 1.2 GB CSV with 1000 columns 7.7 -> 3.8, a 1 GB tall CSV 3.6 -> 3.3, a
   229 MB JSON 1.3 -> 1.2; with the `examples/payer-names` config the 1000-column CSV
   13.6 -> 5.3 and the tall CSV 4.6 -> 3.3. The Parquet bytes are the same.
+- A column that reads only the charge and the file's metadata is made once per charge and
+  repeated over its payers (a wide row's payer/plan blocks, a JSON standard charge's
+  payers). With two column threads, as a machine with four cores has, the 1.2 GB CSV with
+  1000 columns 7.5 -> 6.2 seconds and the 2.5 GB wide CSV 3.7 -> 3.2; with six, where
+  reading the file is the bound, 3% faster and 8% less CPU time on the 1000-column CSV.
+  The Parquet bytes are the same.
 
 ## [0.1.3] - 2026-10-23
 

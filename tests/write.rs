@@ -149,6 +149,41 @@ A,99213,CPT,,Acme,PPO,1.5,7,yes,2026-01-02
         );
     }
 
+    /// A wide row's payers share its charge, so the charge's columns repeat the row before.
+    #[test]
+    fn charge_over_payers() {
+        let input = "\
+hospital_name,last_updated_on,version,hospital_address,license_number | NY
+General Hospital,2026-01-01,2.2.0,1 Main St,12345
+description,code | 1,code | 1 | type,modifiers,standard_charge | gross,standard_charge | discounted_cash,standard_charge | min,additional_generic_notes,standard_charge | Acme | PPO | negotiated_dollar,standard_charge | Beta | HMO | negotiated_dollar
+A,99213,CPT,25|59,1.5,7,2026-01-02,yes,10,20
+,,,,,,,,30,40
+";
+        let config = columns(&[
+            ("s", "charge.description", "string"),
+            ("j", "charge.codes", "json"),
+            ("l", "charge.modifiers", "list"),
+            ("f", "charge.gross_charge", "f64"),
+            ("i", "charge.discounted_cash", "i64"),
+            ("d", "charge.minimum", "date"),
+            ("b", "charge.notes", "bool"),
+            ("p", "payer.name", "string"),
+        ]);
+        let path = dir("payers").join("out.parquet");
+        run(input.as_bytes(), Format::Csv, &config, &Output::new(&path));
+        let a = r#"s: "A", j: "[{"code":"99213","type":"CPT"}]", l: ["25", "59"], f: 1.5, i: 7, d: 2026-01-02, b: true"#;
+        let null = r#"s: null, j: "[]", l: [], f: null, i: null, d: null, b: null"#;
+        assert_eq!(
+            rows(&path),
+            [
+                format!(r#"{{{a}, p: "Acme"}}"#),
+                format!(r#"{{{a}, p: "Beta"}}"#),
+                format!(r#"{{{null}, p: "Acme"}}"#),
+                format!(r#"{{{null}, p: "Beta"}}"#),
+            ]
+        );
+    }
+
     #[test]
     fn codecs() {
         let config = columns(&[("s", "charge.description", "string")]);

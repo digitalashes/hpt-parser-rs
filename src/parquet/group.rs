@@ -69,6 +69,8 @@ struct Chunk {
     /// The column's place in a row.
     index: usize,
     column: Column,
+    /// [`Column::per_charge`].
+    per_charge: bool,
     buffer: Buffer,
     descr: ColumnDescPtr,
     pages: Pages,
@@ -148,10 +150,16 @@ impl Group {
         thread::Builder::new()
             .name("batch drop".into())
             .spawn(move || freed.into_iter().for_each(drop))?;
-        // Heaviest first, each column to the worker with the least weight so far. A `json`
-        // column (the codes) took as long as four others on a wide file.
-        // ponytail: weights by type, measure a column's cost if another one lags.
-        let weight = |c: &Column| if matches!(c.kind, Type::Json) { 4 } else { 1 };
+        // Heaviest first, each column to the worker with the least weight so far. On a wide
+        // file a column made once per charge took half as long as one made for every record,
+        // and a `json` column (the codes) as long as four others made the same way.
+        // ponytail: weights by kind, measure a column's cost if another one lags.
+        let weight = |c: &Column| match (c.per_charge(), c.kind) {
+            (true, Type::Json) => 2,
+            (true, _) => 1,
+            (false, Type::Json) => 8,
+            (false, _) => 2,
+        };
         let mut order: Vec<_> = columns.iter().zip(descrs).enumerate().collect();
         order.sort_by_key(|(_, (c, _))| std::cmp::Reverse(weight(c)));
         let mut shares: Vec<(u32, Vec<Chunk>)> = (0..k).map(|_| (0, Vec::new())).collect();
@@ -161,8 +169,9 @@ impl Group {
             let buffer = Buffer::new(column.kind);
             let share = shares.iter_mut().min_by_key(|(w, _)| *w).expect("one worker at least");
             share.0 += weight(column);
-            let column = column.clone();
-            share.1.push(Chunk { index, column, buffer, descr: descr.clone(), pages, writer });
+            let (column, per_charge) = (column.clone(), column.per_charge());
+            let descr = descr.clone();
+            share.1.push(Chunk { index, column, per_charge, buffer, descr, pages, writer });
         }
         let workers = (shares.into_iter())
             .map(|(_, chunks)| {
@@ -244,16 +253,22 @@ fn worker(
                     if failed.is_some() {
                         break;
                     }
+                    let record = &batch.records[r];
+                    // The row before, still in the buffers, has the same charge: a wide row's
+                    // payers, or a JSON standard charge's.
+                    let again = r > 0
+                        && buffered > 0
+                        && Arc::ptr_eq(&batch.records[r - 1].charge, &record.charge);
                     for c in &mut chunks {
-                        let value = match batch.plugin.get(c.index) {
+                        match batch.plugin.get(c.index) {
                             // Lent as a record's text is.
-                            Some(Some(values)) => match &values[r] {
+                            Some(Some(values)) => c.buffer.push(match &values[r] {
                                 Value::Text(s) => Value::Text(Cow::Borrowed(s)),
                                 v => v.clone(),
-                            },
-                            _ => c.column.value(&batch.records[r], &batch.metadata),
-                        };
-                        c.buffer.push(value);
+                            }),
+                            _ if again && c.per_charge => c.buffer.repeat(),
+                            _ => c.buffer.push(c.column.value(record, &batch.metadata)),
+                        }
                     }
                     buffered += 1;
                     if buffered == batch_size {
@@ -393,4 +408,37 @@ impl Buffer {
         };
         self.def.push(def);
     }
+
+    /// Pushes the last row again: its levels, and its value unless it is null, or a list's
+    /// elements from where its repetition level is 0.
+    fn repeat(&mut self) {
+        const ROW: &str = "a row to repeat is buffered";
+        let (from, values) = match &self.values {
+            Values::List(_, rep) => {
+                let from = rep.iter().rposition(|&r| r == 0).expect(ROW);
+                (from, self.def[from..].iter().filter(|&&d| d == 3).count())
+            }
+            _ => (
+                self.def.len().checked_sub(1).expect(ROW),
+                usize::from(self.def.last() == Some(&1)),
+            ),
+        };
+        self.def.extend_from_within(from..);
+        match &mut self.values {
+            Values::Bytes(v, _) => again(v, values),
+            Values::List(v, rep) => {
+                again(v, values);
+                rep.extend_from_within(from..);
+            }
+            Values::F64(v) => again(v, values),
+            Values::I64(v) => again(v, values),
+            Values::Bool(v) => again(v, values),
+            Values::Date(v) => again(v, values),
+        }
+    }
+}
+
+/// Pushes the last `n` values again.
+fn again<T: Clone>(v: &mut Vec<T>, n: usize) {
+    v.extend_from_within(v.len() - n..);
 }
