@@ -15,7 +15,7 @@ exclude_re = [
     # Without the `plugins` feature only.
     'parquet/mod\.rs:\d+:8: delete ! in write',
     # The batch path gives the values the row path does.
-    'replace batch::Column::has_plugins -> bool with true',
+    'replace Column::has_plugins -> bool with true',
     # A change counted at every item only ends more batches early.
     'json/mod\.rs:\d+:\d+: replace > with >= in Parser<R>::next_item',
     # An open file has a record.
@@ -29,7 +29,7 @@ exclude_re = [
     # Without the repeat each value is made again.
     'replace match guard again && c.per_charge with false in worker',
     'replace > with < in worker',
-    'replace batch::Column::per_charge -> bool with false',
+    'replace Column::per_charge -> bool with false',
     # The thread a batch is dropped on.
     'replace Group::free with \(\)',
     # The size of a lot of CSV rows: their records are cut into batches of 512 anyway.
