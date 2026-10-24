@@ -12,10 +12,10 @@ Notable changes to `hpt-parser`, the library and the command line. The format fo
 - Faster, with the same Parquet bytes: the records are made on a thread of their own, the
   column values are made and encoded on two to six threads, a column that reads only the
   charge is made once for all its payers, and JSON is read by a reader of its own. Against
-  0.1.3: a 1 GB tall CSV 4.3 -> 2.7 seconds, the 2.5 GB wide CSV 4.6 -> 2.3, a 1.2 GB CSV
-  with 1000 columns 9.8 -> 3.2, a 229 MB JSON 1.4 -> 0.7; with the `examples/payer-names`
-  config the tall CSV 3.5 -> 2.7 and the JSON 1.3 -> 0.7. CPU time is up to a third higher
-  on CSV files.
+  0.1.3: a 1 GB tall CSV 4.3 -> 2.7 seconds, the 2.5 GB wide CSV 4.4 -> 2.3, a 1.2 GB CSV
+  with 1000 columns 9.6 -> 3.3, a 229 MB JSON 1.4 -> 0.7; with the `examples/payer-names`
+  config the tall CSV 3.5 -> 2.7 and the JSON 1.3 -> 0.7. CPU time is up to 36% higher on
+  CSV files.
 - The release binaries are built with thin LTO and one codegen unit: 22 MB instead of 27.
 - A JSON charge item's records stay in one plugin call: a call ends before an item that
   does not fit in 512, and an item with more records than that is a call of its own.
