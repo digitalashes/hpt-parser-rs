@@ -57,6 +57,7 @@ exclude_re = [
     # Two masks never share their lowest set bit, and the empty-run fast path and the
     # past-the-end filter only save work.
     'replace \| with \^ in parse_row',
+    'replace \| with \^ in Parser<R>::string',
     'replace \^ with \| in parse_row',
     'replace > with < in parse_row',
     'replace < with <= in scan',

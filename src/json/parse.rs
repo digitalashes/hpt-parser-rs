@@ -333,12 +333,11 @@ impl<R: Read> Parser<R> {
         s.clear();
         loop {
             // A run of plain bytes, which ends at ASCII, so at a char boundary.
-            let rest = &self.text.as_bytes()[self.at..];
-            let run = (rest.iter())
-                .position(|&c| c == b'"' || c == b'\\' || c < 0x20)
-                .unwrap_or(rest.len());
-            s.push_str(&self.text[self.at..self.at + run]);
-            self.at += run;
+            let b = self.text.as_bytes();
+            let plain = |v| text::eq(v, b'"') | text::eq(v, b'\\') | text::below(v, 0x20);
+            let end = text::scan(b, self.at, plain).unwrap_or(b.len());
+            s.push_str(&self.text[self.at..end]);
+            self.at = end;
             match self.raw()? {
                 Some(b'"') => {
                     self.at += 1;

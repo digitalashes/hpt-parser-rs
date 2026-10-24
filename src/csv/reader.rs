@@ -172,7 +172,8 @@ fn parse_row(s: &str, eof: bool, row: &mut Parsed) -> Option<(usize, u64)> {
             let mut q = cursor;
             let mut doubled = false;
             loop {
-                let Some(next) = scan(b, q + 1, |v| eq(v, b'"') | eq(v, b'\n')) else {
+                let Some(next) = text::scan(b, q + 1, |v| text::eq(v, b'"') | text::eq(v, b'\n'))
+                else {
                     if !eof {
                         return None;
                     }
@@ -219,13 +220,15 @@ fn parse_row(s: &str, eof: bool, row: &mut Parsed) -> Option<(usize, u64)> {
             continue;
         }
         // Most cells of a wide file are empty, many of them in a row.
-        let empty = scan(b, cursor, |v| v ^ (ONES * u64::from(b','))).unwrap_or(b.len()) - cursor;
+        let empty = text::scan(b, cursor, |v| v ^ (text::ONES * u64::from(b',')))
+            .unwrap_or(b.len())
+            - cursor;
         if empty > 0 {
             row.fields += empty;
             cursor += empty;
             continue;
         }
-        match scan(b, cursor, |v| eq(v, b',') | eq(v, b'\n')) {
+        match text::scan(b, cursor, |v| text::eq(v, b',') | text::eq(v, b'\n')) {
             Some(comma) if b[comma] == b',' => {
                 row.push(cursor, comma);
                 cursor = comma + 1;
@@ -241,33 +244,6 @@ fn parse_row(s: &str, eof: bool, row: &mut Parsed) -> Option<(usize, u64)> {
             }
         }
     }
-}
-
-/// A byte in each of a word's eight bytes.
-const ONES: u64 = u64::from_le_bytes([1; 8]);
-
-/// The bytes of `v` equal to `c`, as their top bit: exact at the lowest one, which is all
-/// `scan` reads (a borrow can mark a byte above a match).
-fn eq(v: u64, c: u8) -> u64 {
-    let x = v ^ (ONES * u64::from(c));
-    x.wrapping_sub(ONES) & !x & (ONES << 7)
-}
-
-/// The first byte of `b` from `from` on that `hit` marks, eight bytes at a time: `hit` maps
-/// eight bytes, the first lowest, to a word whose lowest set bit is in the first marked
-/// byte. Std's memchr reads byte by byte up to its alignment, and most fields are shorter.
-fn scan(b: &[u8], from: usize, hit: impl Fn(u64) -> u64) -> Option<usize> {
-    let mut i = from;
-    while let Some(word) = b.get(i..i + 8) {
-        let m = hit(u64::from_le_bytes(word.try_into().expect("eight bytes")));
-        if m != 0 {
-            return Some(i + m.trailing_zeros() as usize / 8);
-        }
-        i += 8;
-    }
-    let mut last = [0; 8];
-    last[..b.len() - i].copy_from_slice(&b[i..]);
-    Some(i + hit(u64::from_le_bytes(last)).trailing_zeros() as usize / 8).filter(|&p| p < b.len())
 }
 
 #[cfg(test)]

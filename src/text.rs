@@ -99,3 +99,36 @@ fn decode(bytes: &mut Vec<u8>, out: &mut String) {
     };
     bytes.drain(..done);
 }
+
+/// A byte in each of a word's eight bytes.
+pub const ONES: u64 = u64::from_le_bytes([1; 8]);
+
+/// The bytes of `v` equal to `c`, as their top bit: exact at the lowest one, which is all
+/// `scan` reads (a borrow can mark a byte above a match).
+pub fn eq(v: u64, c: u8) -> u64 {
+    let x = v ^ (ONES * u64::from(c));
+    x.wrapping_sub(ONES) & !x & (ONES << 7)
+}
+
+/// The bytes of `v` below `c` (at most 128), marked as `eq` marks them.
+pub fn below(v: u64, c: u8) -> u64 {
+    v.wrapping_sub(ONES * u64::from(c)) & !v & (ONES << 7)
+}
+
+/// The first byte of `b` from `from` on that `hit` marks, eight bytes at a time: `hit` maps
+/// eight bytes, the first lowest, to a word whose lowest set bit is in the first marked
+/// byte. Std's memchr reads byte by byte up to its alignment, and most fields and strings
+/// are shorter.
+pub fn scan(b: &[u8], from: usize, hit: impl Fn(u64) -> u64) -> Option<usize> {
+    let mut i = from;
+    while let Some(word) = b.get(i..i + 8) {
+        let m = hit(u64::from_le_bytes(word.try_into().expect("eight bytes")));
+        if m != 0 {
+            return Some(i + m.trailing_zeros() as usize / 8);
+        }
+        i += 8;
+    }
+    let mut last = [0; 8];
+    last[..b.len() - i].copy_from_slice(&b[i..]);
+    Some(i + hit(u64::from_le_bytes(last)).trailing_zeros() as usize / 8).filter(|&p| p < b.len())
+}
