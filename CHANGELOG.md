@@ -34,6 +34,20 @@ Notable changes to `hpt-parser`, the library and the command line. The format fo
 - A JSON charge item's records stay in one plugin call: a call ends before an item that
   does not fit in 512, and an item with more records than that is a call of its own (a
   call had up to 512 records, cut anywhere).
+- JSON syntax errors say what was expected and what was found, at the start of the token
+  out of place: `line 1, column 6: expected ':', found '1'` for `{"a" 1}` (it was
+  `Unexpected NUMBER (1) in state COLON` at the token's end, in the terms of the
+  JavaScript parser the CMS validator uses). `the top-level value is not an object` and
+  `standard_charge_information is not an array` are as before.
+- Faster on JSON files: the file is read by a reader of its own instead of a tokenizer and a
+  token parser. A 229 MB JSON 1.01 -> 0.79 seconds, a 96 MB one 0.44 -> 0.38, and 8-19% on
+  five other JSON files of 40-310 MB; with the `examples/payer-names` config 2-4%. The
+  Parquet bytes are the same.
+
+### Fixed
+
+- A JSON file with a syntax error gives every record before the error: the ones read in
+  the same 64 KiB as the error were lost.
 
 ## [0.1.3] - 2026-10-23
 

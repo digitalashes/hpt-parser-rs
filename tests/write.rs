@@ -272,7 +272,8 @@ A,99213,CPT,25|59,1.5,7,2026-01-02,yes,10,20
     #[test]
     fn error_after_chunks() {
         let config = columns(&[("s", "charge.description", "string")]);
-        // 40 kB each, so that the error comes in a later read than the first three.
+        // 40 kB each, so that the error comes in a later read than the first three; all four
+        // come out before it, the last in a chunk still open.
         let pad = "x".repeat(40_000);
         let item = |d| format!(r#"{{"description":"{d}","x":"{pad}","standard_charges":[{{}}]}}"#);
         let items = ["A", "B", "C", "D"].map(item).join(",");
@@ -284,8 +285,8 @@ A,99213,CPT,25|59,1.5,7,2026-01-02,yes,10,20
         let parser = Parser::new(input.as_bytes(), Format::Json);
         let written = write(parser, &config, &output, |c| chunks.push(c.index));
         assert!(matches!(written, Err(Error::Json { .. })), "{written:?}");
-        assert_eq!(chunks, [1, 2]);
-        assert_eq!(rows(&dir.join("out-00002.parquet")), [r#"{s: "B"}"#]);
+        assert_eq!(chunks, [1, 2, 3]);
+        assert_eq!(rows(&dir.join("out-00003.parquet")), [r#"{s: "C"}"#]);
     }
 
     #[test]
