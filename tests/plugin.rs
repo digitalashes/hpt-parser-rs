@@ -10,6 +10,7 @@ use hpt_parser::{Error, Format, Parser};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use std::fmt::Write;
 use std::fs::{self, File};
+use std::iter;
 use std::path::{Path, PathBuf};
 
 const WASM: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/plugin/test.wasm");
@@ -143,6 +144,34 @@ plugin = \"t.keep_inpatient\""
     for (k, row) in rows.iter().enumerate().skip(1) {
         assert_eq!(*row, format!("{{s: \"ITEM {}\"}}", 2 * k + 1));
     }
+}
+
+/// A call gets up to 512 values. A JSON charge item's records stay in one: a call ends before
+/// an item that does not fit, and an item with more records is a call of its own.
+#[test]
+fn call_sizes() {
+    let path = out("plugin-sizes");
+    let toml = config(&format!("{DESCRIPTION}\ntransform = [{{ plugin = \"t.count\" }}]"));
+    let calls = |sizes: &[usize]| -> Vec<String> {
+        sizes.iter().flat_map(|&n| vec![format!(r#"{{s: "{n}"}}"#); n]).collect()
+    };
+    run(&csv(1100), &toml, &path).unwrap();
+    assert_eq!(rows(&path), calls(&[512, 512, 76]));
+
+    let item = |charges: usize, payers: usize| {
+        let payers = vec![r#"{"payer_name": "Acme"}"#; payers].join(",");
+        let charge = format!(r#"{{"payers_information": [{payers}]}}"#);
+        let charges = vec![charge; charges].join(",");
+        format!(r#"{{"description": "d", "standard_charges": [{charges}]}}"#)
+    };
+    let items = (iter::repeat_n(item(2, 2), 128).chain([item(1, 600)]))
+        .chain(iter::repeat_n(item(2, 2), 3))
+        .collect::<Vec<_>>();
+    let input = format!(r#"{{"standard_charge_information": [{}]}}"#, items.join(","));
+    let config = Config::parse(&toml).unwrap();
+    let parser = Parser::new(input.as_bytes(), Format::Json);
+    write(parser, &config, &Output::new(&path), |_| {}).unwrap();
+    assert_eq!(rows(&path), calls(&[512, 600, 12]));
 }
 
 #[test]

@@ -385,6 +385,38 @@ impl<R: Read> Parser<R> {
             Inner::Json(p) => p.changes,
         }
     }
+
+    /// The next record, or for JSON the next charge item with its records still to make
+    /// ([`json::item`]), so that another thread makes them while the next item is read.
+    #[cfg(feature = "parquet")]
+    pub(crate) fn next_item(&mut self) -> Option<Result<Item, Error>> {
+        let Inner::Json(p) = &mut self.inner else {
+            return self.next().map(|r| r.map(Item::Record));
+        };
+        if self.done {
+            return None;
+        }
+        let next = p.next_item();
+        self.done = !matches!(next, Ok(Some(_)));
+        next.transpose().map(|r| r.map(|(value, position)| Item::Json(value, position)))
+    }
+
+    /// Hands back a JSON item's value once its records are made.
+    #[cfg(feature = "parquet")]
+    pub(crate) fn recycle(&mut self, value: json::Value) {
+        if let Inner::Json(p) = &mut self.inner {
+            p.recycle(value);
+        }
+    }
+}
+
+/// What [`Parser::next_item`] reads.
+#[cfg(feature = "parquet")]
+#[expect(clippy::large_enum_variant, reason = "moved once per record, boxing it a malloc")]
+pub(crate) enum Item {
+    Record(Record),
+    /// A charge item and its position.
+    Json(json::Value, u64),
 }
 
 impl<R: Read> Iterator for Parser<R> {

@@ -7,7 +7,8 @@ mod parse;
 use crate::{
     Aliases, Charge, Code, Error, Layout, Metadata, ModifierInfo, ModifierPayer, Payer, Record,
 };
-use parse::{Key, Value};
+use parse::Key;
+pub(crate) use parse::Value;
 use std::collections::VecDeque;
 use std::io::Read;
 
@@ -96,26 +97,41 @@ impl<R: Read> Parser<R> {
     }
 
     /// Reads up to the next charge item and queues its records; false at the end.
+    pub fn fill(&mut self, pending: &mut VecDeque<Record>) -> Result<bool, Error> {
+        let Some((value, position)) = self.next_item()? else {
+            return Ok(false);
+        };
+        item(&value, position, pending);
+        self.recycle(value);
+        Ok(true)
+    }
+
+    /// Reads the header members up to the next charge item and returns the item with its
+    /// position, for [`item`] to make into records.
     // ponytail: a top-level member read through an alias does not give way to one under its
     // own name (the later one wins, as with a repeated name); the members stream, so that
     // takes remembering which names came
-    pub fn fill(&mut self, pending: &mut VecDeque<Record>) -> Result<bool, Error> {
+    pub fn next_item(&mut self) -> Result<Option<(Value, u64)>, Error> {
         while let Some((key, value)) = self.values.next()? {
             let aliases = self.metadata.aliases_used.len();
             self.metadata.aliases_used.append(self.values.aliases_used());
-            match &key {
-                Key::Index(i) => item(&value, *i as u64, pending),
-                Key::Name(name) => header_field(&mut self.metadata, name, &value),
+            if let Key::Name(name) = &key {
+                header_field(&mut self.metadata, name, &value);
             }
             if matches!(key, Key::Name(_)) || self.metadata.aliases_used.len() > aliases {
                 self.changes += 1;
             }
-            self.values.recycle(value);
-            if matches!(key, Key::Index(_)) {
-                return Ok(true);
+            if let Key::Index(i) = key {
+                return Ok(Some((value, i as u64)));
             }
+            self.values.recycle(value);
         }
-        Ok(false)
+        Ok(None)
+    }
+
+    /// Hands back an item `next_item` returned, its buffers reused for the items read next.
+    pub fn recycle(&mut self, value: Value) {
+        self.values.recycle(value);
     }
 }
 
@@ -161,9 +177,16 @@ fn header_field(m: &mut Metadata, name: &str, v: &Value) {
     }
 }
 
+/// How many records [`item`] makes of a charge item.
+#[cfg(feature = "parquet")]
+pub(crate) fn records(v: &Value) -> usize {
+    let charges = array(v.get("standard_charges"));
+    charges.map(|c| array(c.get("payers_information")).len().max(1)).sum::<usize>().max(1)
+}
+
 /// A charge item's records: one per `payers_information` entry of each `standard_charges`
 /// entry, those of one entry sharing its charge.
-fn item(v: &Value, position: u64, pending: &mut VecDeque<Record>) {
+pub(crate) fn item(v: &Value, position: u64, pending: &mut VecDeque<Record>) {
     let drug = v.get("drug_information");
     let item = Charge {
         description: text(v.get("description")),
@@ -250,8 +273,11 @@ mod tests {
     fn names() {
         let code = include_str!("mod.rs").split("#[cfg(all(test").next().unwrap();
         let names = code.split("const NAMES").nth(1).unwrap().split("];").nth(1).unwrap();
-        for literal in names.split('"').skip(1).step_by(2) {
-            if literal.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        let mut parts = names.split('"');
+        while let (Some(before), Some(literal)) = (parts.next(), parts.next()) {
+            if !before.ends_with("feature = ")
+                && literal.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
                 assert!(super::NAMES.contains(&literal), "{literal}");
             }
         }

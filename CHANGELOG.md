@@ -26,6 +26,14 @@ Notable changes to `hpt-parser`, the library and the command line. The format fo
   1000 columns 7.5 -> 6.2 seconds and the 2.5 GB wide CSV 3.7 -> 3.2; with six, where
   reading the file is the bound, 3% faster and 8% less CPU time on the 1000-column CSV.
   The Parquet bytes are the same.
+- Faster on JSON files: the thread that makes the rows also makes each charge item's
+  records, while the next items are read. A 229 MB JSON 1.25 -> 1.02 seconds, a 96 MB one
+  0.54 -> 0.44, and 14-20% on five other JSON files of 40-310 MB; with the
+  `examples/payer-names` config 6-17%. Peak memory is 1-15 MB higher and CPU time 6-35%,
+  CSV files are as before, and the Parquet bytes are the same.
+- A JSON charge item's records stay in one plugin call: a call ends before an item that
+  does not fit in 512, and an item with more records than that is a call of its own (a
+  call had up to 512 records, cut anywhere).
 
 ## [0.1.3] - 2026-10-23
 

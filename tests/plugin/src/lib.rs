@@ -62,6 +62,13 @@ pub fn fail(_: String) -> FnResult<String> {
     Err(WithReturnCode::new(Error::msg("this function always fails"), 1))
 }
 
+/// Value transform: for each value, how many the call got.
+#[plugin_fn]
+pub fn count(Json(input): Json<Value>) -> FnResult<Json<Value>> {
+    let n = items(&input, "values").len();
+    Ok(Json(json!({ "values": vec![n.to_string(); n] })))
+}
+
 /// One value fewer than it was given.
 #[plugin_fn]
 pub fn short(Json(input): Json<Value>) -> FnResult<Json<Value>> {

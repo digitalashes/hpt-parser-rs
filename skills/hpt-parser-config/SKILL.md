@@ -213,7 +213,8 @@ plugin = "acme.source"
 | filter | `{"records":[..]}` | `{"keep":[true,false,..]}` |
 | metadata | the metadata object | `{"fields":{"key":"value"}}` |
 
-- A call gets up to 512 items, and the answer has exactly one per input, in order. A
+- A call gets up to 512 items (more only for a JSON charge item with more payers: its
+  records stay in one call), and the answer has exactly one per input, in order. A
   wrong shape, a wrong count, a `keep` item that is not a boolean or an error from the
   function stops the run: `error: plugin acme.keep: ...`.
 - A record is a flat object keyed by field name with the hook's `fields` that have a

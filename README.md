@@ -259,8 +259,9 @@ plugin = "acme.source"        # adds fields to the metadata
 | filter          | `{"records":[...]}`   | `{"keep":[true,false,...]}`   |
 | metadata        | the metadata object   | `{"fields":{"key":"value"}}`  |
 
-- Calls are batched, up to 512 records or values each, and an answer has one item per
-  input, in order.
+- Calls are batched, up to 512 records or values each (more only for a JSON charge item
+  with more payers than that: its records stay in one call), and an answer has one item
+  per input, in order.
 - A record is flat, keyed by field name, with the hook's `fields` that have a value:
   `{"charge.description":"MRI brain","charge.codes":[{"code":"70551","type":"CPT"}],"payer.name":"Acme",...}`.
   Without `fields` it holds every `charge.*` and `payer.*` field and `record.position`;

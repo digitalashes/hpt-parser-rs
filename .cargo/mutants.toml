@@ -13,13 +13,13 @@ exclude_re = [
     'main\.rs:135:13: delete match arm "--notify-socket" in parse',
     'replace connect -> io::Result<Box<dyn Write>> with Ok\(Box::new\(Default::default\(\)\)\)',
     # Without the `plugins` feature only.
-    'parquet/mod\.rs:205:8: delete ! in write',
+    'parquet/mod\.rs:\d+:8: delete ! in write',
     # The batch path gives the values the row path does.
     'replace batch::Column::has_plugins -> bool with true',
     # A change counted at every item only ends more batches early.
-    'json/mod\.rs:\d+:\d+: replace > with >= in Parser<R>::fill',
+    'json/mod\.rs:\d+:\d+: replace > with >= in Parser<R>::next_item',
     # An open file has a record.
-    'mod\.rs:346:63: replace > with >= in Files<.+>::rows',
+    'mod\.rs:\d+:63: replace > with >= in Files<.+>::rows',
     # The pages are in memory: flushing them does nothing.
     'replace <impl PageWriter for PageSink>::close',
     # The batch size only sets how often the buffers are encoded (and a charge's rows
