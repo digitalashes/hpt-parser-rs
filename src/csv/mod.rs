@@ -27,9 +27,11 @@ pub struct Parser<R> {
     columns: Option<Arc<Columns>>,
     /// One entry per payer/plan block, `None` between rows.
     payers: Vec<Option<Payer>>,
-    /// An error met after the rows `next_rows` returned last.
+    /// An error met after the rows `next_rows` returned last. Its `dyn Error` would make the
+    /// parser not unwind safe, but it is only kept to be returned: no panic can leave it half
+    /// changed.
     #[cfg(feature = "parquet")]
-    error: Option<Error>,
+    error: std::panic::AssertUnwindSafe<Option<Error>>,
 }
 
 /// Data rows copied out of the reader, so that another thread makes their records.
@@ -116,7 +118,7 @@ impl<R: Read> Parser<R> {
             columns: None,
             payers: Vec::new(),
             #[cfg(feature = "parquet")]
-            error: None,
+            error: std::panic::AssertUnwindSafe(None),
         }
     }
 
@@ -151,7 +153,7 @@ impl<R: Read> Parser<R> {
                 Ok(None) => break,
                 Err(e) if rows.lines.is_empty() => return Err(e.into()),
                 Err(e) => {
-                    self.error = Some(e.into());
+                    *self.error = Some(e.into());
                     break;
                 }
             }
