@@ -59,6 +59,10 @@ Notable changes to `hpt-parser`, the library and the command line. The format fo
   about one record per charge item, where the records thread is the bound, 1.05 -> 1.07
   (0.82 -> 0.84 with the config; even when built with branches kept within 32-byte
   boundaries). The Parquet bytes are the same.
+- A JSON charge item's description and codes move into the record of its last standard
+  charge instead of being copied for it: 13% faster on the 161 MB JSON with about one
+  record per charge item, 12% with the `examples/payer-names` config, other JSON files
+  as before. The Parquet bytes are the same.
 
 ### Fixed
 

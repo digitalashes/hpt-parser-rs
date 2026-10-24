@@ -196,7 +196,7 @@ pub(crate) fn records(v: &Value) -> usize {
 /// entry, those of one entry sharing its charge.
 pub(crate) fn item(v: &Value, position: u64, pending: &mut VecDeque<Record>) {
     let drug = v.get("drug_information");
-    let item = Charge {
+    let mut item = Charge {
         description: text(v.get("description")),
         codes: (array(v.get("code_information")))
             .filter_map(|c| {
@@ -207,12 +207,14 @@ pub(crate) fn item(v: &Value, position: u64, pending: &mut VecDeque<Record>) {
         drug_unit_type: text(drug.and_then(|d| d.get("type"))),
         ..Charge::default()
     };
-    let mut charges = array(v.get("standard_charges")).peekable();
-    if charges.peek().is_none() {
+    let charges = array(v.get("standard_charges"));
+    let Some(last) = charges.len().checked_sub(1) else {
         return crate::fan_out(pending, item, [], position);
-    }
-    for c in charges {
+    };
+    for (i, c) in charges.enumerate() {
         let get = |name| text(c.get(name));
+        // The last standard charge takes the item's fields, the others a copy.
+        let fields = if i < last { item.clone() } else { std::mem::take(&mut item) };
         let charge = Charge {
             setting: get("setting"),
             billing_class: get("billing_class"),
@@ -222,7 +224,7 @@ pub(crate) fn item(v: &Value, position: u64, pending: &mut VecDeque<Record>) {
             minimum: get("minimum"),
             maximum: get("maximum"),
             notes: get("additional_generic_notes"),
-            ..item.clone()
+            ..fields
         };
         crate::fan_out(pending, charge, array(c.get("payers_information")).map(payer), position);
     }
