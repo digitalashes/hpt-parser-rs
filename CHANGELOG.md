@@ -7,6 +7,8 @@ Notable changes to `hpt-parser`, the library and the command line. The format fo
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-25
+
 ### Changed
 
 - Faster, with the same Parquet bytes: the records are made on a thread of their own, the
@@ -98,7 +100,8 @@ The first release.
   pipelines.
 - Release binaries for macOS, Linux and Windows.
 
-[Unreleased]: https://github.com/digitalashes/hpt-parser-rs/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/digitalashes/hpt-parser-rs/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/digitalashes/hpt-parser-rs/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/digitalashes/hpt-parser-rs/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/digitalashes/hpt-parser-rs/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/digitalashes/hpt-parser-rs/compare/v0.1.0...v0.1.1
