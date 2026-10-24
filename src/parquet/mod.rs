@@ -9,7 +9,7 @@ mod group;
 
 use crate::config::{self, Call, Column, Config, Type, plugin_error};
 use crate::csv;
-use crate::json::{self, Value};
+use crate::json::{self, Spare, Value};
 use crate::{Error, Item, Metadata, Parser, Record};
 use ::parquet::basic::{
     BrotliLevel, Compression as Codec, ConvertedType, GzipLevel, LogicalType, Repetition,
@@ -276,9 +276,9 @@ fn rows<'o, R: Read>(
     let (to_records, read) = mpsc::sync_channel::<(Vec<csv::Rows>, Items, Arc<Metadata>)>(1);
     let (to_rows, batches) = mpsc::sync_channel::<(Vec<Record>, Arc<Metadata>)>(1);
     let (to_caller, closed) = mpsc::channel();
-    let (to_reuse, done) = mpsc::channel::<Items>();
+    let (to_reuse, done) = mpsc::channel::<Result<Spare, Items>>();
     thread::scope(|s| {
-        s.spawn(move || records(read, &to_rows, &to_reuse));
+        s.spawn(move || records(&read, &to_rows, &to_reuse));
         let writer = s.spawn(move || {
             for (records, metadata) in batches {
                 if first.is_none()
@@ -324,8 +324,15 @@ fn rows<'o, R: Read>(
                 for c in closed.try_iter() {
                     on_chunk(&c);
                 }
-                for (value, _) in done.try_iter().flatten() {
-                    parser.recycle(value);
+                for back in done.try_iter() {
+                    match back {
+                        Ok(spare) => parser.reuse(spare),
+                        Err(items) => {
+                            for (value, _) in items {
+                                parser.recycle(value);
+                            }
+                        }
+                    }
                 }
             }
             if seen.is_none() || stale {
@@ -354,16 +361,18 @@ fn rows<'o, R: Read>(
 }
 
 /// Makes the records of each batch read and sends them on: a JSON batch's together, its
-/// values back to the caller; CSV rows' cut into batches of `BATCH`.
+/// values back to the caller, taken apart or not; CSV rows' cut into batches of `BATCH`.
 fn records(
-    read: mpsc::Receiver<(Vec<csv::Rows>, Items, Arc<Metadata>)>,
+    read: &mpsc::Receiver<(Vec<csv::Rows>, Items, Arc<Metadata>)>,
     to_rows: &mpsc::SyncSender<(Vec<Record>, Arc<Metadata>)>,
-    to_reuse: &mpsc::Sender<Items>,
+    to_reuse: &mpsc::Sender<Result<Spare, Items>>,
 ) {
     // CSV records not sent yet, and the metadata they were read with.
     let (mut rest, mut seen) = (VecDeque::new(), None);
+    // A batch read while the one before was made.
+    let mut waiting = None;
     // Each send fails only when the writer stopped.
-    for (rows, items, metadata) in read {
+    while let Some((rows, items, metadata)) = waiting.take().or_else(|| read.recv().ok()) {
         if items.is_empty() {
             for r in &rows {
                 r.records(&mut rest);
@@ -380,10 +389,20 @@ fn records(
         for (value, position) in &items {
             json::item(value, *position, &mut pending);
         }
-        // Taking the values apart on the thread that made the records, while still in its
-        // cache, saved the caller's thread 17% when that thread also called the plugins, but
-        // overloaded it.
-        _ = to_reuse.send(items);
+        // The values are taken apart here, while still in this thread's cache, unless the next
+        // batch is read already: then this thread is the slower one (one record per item, say)
+        // and the caller takes them apart.
+        let back = if let Ok(batch) = read.try_recv() {
+            waiting = Some(batch);
+            Err(items)
+        } else {
+            let mut spare = Spare::default();
+            for (value, _) in items {
+                spare.keep(value);
+            }
+            Ok(spare)
+        };
+        _ = to_reuse.send(back);
         if to_rows.send((pending.into(), metadata)).is_err() {
             return;
         }

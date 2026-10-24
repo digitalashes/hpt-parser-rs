@@ -159,6 +159,14 @@ impl<R: Read> Parser<R> {
         self.spare.keep(value);
     }
 
+    /// Hands back the buffers of values `next` returned, taken apart elsewhere.
+    #[cfg(feature = "parquet")]
+    pub fn reuse(&mut self, mut spare: Spare) {
+        self.spare.strings.append(&mut spare.strings);
+        self.spare.arrays.append(&mut spare.arrays);
+        self.spare.objects.append(&mut spare.objects);
+    }
+
     /// Reads a value, all of it but for a container that stays open, its first member's name
     /// read then.
     fn start(&mut self) -> Result<Got, Error> {
@@ -533,14 +541,14 @@ impl Position {
 /// every string, array and object of every charge item is allocated and freed. Strings are
 /// emptied when they are taken.
 #[derive(Default)]
-struct Spare {
+pub struct Spare {
     strings: Vec<String>,
     arrays: Vec<Vec<Value>>,
     objects: Vec<Object>,
 }
 
 impl Spare {
-    fn keep(&mut self, value: Value) {
+    pub fn keep(&mut self, value: Value) {
         match value {
             Value::String(s) | Value::Number(s) => self.strings.push(s),
             Value::Array(mut items) => {

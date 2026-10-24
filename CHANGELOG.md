@@ -52,6 +52,13 @@ Notable changes to `hpt-parser`, the library and the command line. The format fo
   without plugins took 5-10% longer in this build, a matter of code layout: built with
   branches kept within 32-byte boundaries, the two builds are even. The Parquet bytes are
   the same.
+- Faster on JSON files: the thread that makes a batch's records also takes its charge
+  items apart for reuse, unless the next batch is read already; then the reading thread
+  does it, as before. A 229 MB JSON 0.86 -> 0.81 seconds, a 96 MB one 0.40 -> 0.38, two of
+  301 and 310 MB 5-6%; with the `examples/payer-names` config 5-6%. A 161 MB JSON with
+  about one record per charge item, where the records thread is the bound, 1.05 -> 1.07
+  (0.82 -> 0.84 with the config; even when built with branches kept within 32-byte
+  boundaries). The Parquet bytes are the same.
 
 ### Fixed
 

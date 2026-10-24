@@ -39,6 +39,7 @@ exclude_re = [
     'replace match guard e.error_len\(\).is_none\(\) with false in decode',
     # Buffer reuse: a fresh buffer instead.
     'replace Parser<R>::recycle with \(\)',
+    'replace Parser<R>::reuse with \(\)',
     'Spare::keep',
     'replace > with .* in Parser<R>::name',
     # The member-name length filter only saves comparisons; there is one item path.

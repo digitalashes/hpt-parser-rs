@@ -409,6 +409,14 @@ impl<R: Read> Parser<R> {
             p.recycle(value);
         }
     }
+
+    /// Hands back the buffers of JSON items taken apart once their records are made.
+    #[cfg(feature = "parquet")]
+    pub(crate) fn reuse(&mut self, spare: json::Spare) {
+        if let Inner::Json(p) = &mut self.inner {
+            p.reuse(spare);
+        }
+    }
 }
 
 /// What [`Parser::next_item`] reads.

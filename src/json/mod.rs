@@ -8,6 +8,8 @@ use crate::{
     Aliases, Charge, Code, Error, Layout, Metadata, ModifierInfo, ModifierPayer, Payer, Record,
 };
 use parse::Key;
+#[cfg(feature = "parquet")]
+pub(crate) use parse::Spare;
 pub(crate) use parse::Value;
 use std::collections::VecDeque;
 use std::io::Read;
@@ -132,6 +134,12 @@ impl<R: Read> Parser<R> {
     /// Hands back an item `next_item` returned, its buffers reused for the items read next.
     pub fn recycle(&mut self, value: Value) {
         self.values.recycle(value);
+    }
+
+    /// Hands back the buffers of items `next_item` returned, taken apart elsewhere.
+    #[cfg(feature = "parquet")]
+    pub fn reuse(&mut self, spare: Spare) {
+        self.values.reuse(spare);
     }
 }
 
