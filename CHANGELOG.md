@@ -9,60 +9,19 @@ Notable changes to `hpt-parser`, the library and the command line. The format fo
 
 ### Changed
 
-- Faster on CSV files: each batch's records are freed on a thread of their own once their
-  rows are made. A 1 GB tall CSV 4.4 -> 3.6 seconds, the 2.5 GB wide CSV 4.6 -> 4.1, a
-  1.2 GB CSV with 1000 columns 9.8 -> 8.8, a 229 MB JSON 1.4 -> 1.3. The Parquet bytes are
-  the same.
-- The release binaries are built with one codegen unit and thin LTO: wide CSV files 9-11%
-  faster, tall ones 2-3%, JSON within the spread. The binary is 22 MB instead of 27 MB.
-- Faster on wide CSV files and with plugins: two to six threads, each with a share of the
-  columns, make and encode the values of each row group. The 2.5 GB wide CSV 3.7 -> 2.7
-  seconds, the 1.2 GB CSV with 1000 columns 7.7 -> 3.8, a 1 GB tall CSV 3.6 -> 3.3, a
-  229 MB JSON 1.3 -> 1.2; with the `examples/payer-names` config the 1000-column CSV
-  13.6 -> 5.3 and the tall CSV 4.6 -> 3.3. The Parquet bytes are the same.
-- A column that reads only the charge and the file's metadata is made once per charge and
-  repeated over its payers (a wide row's payer/plan blocks, a JSON standard charge's
-  payers). With two column threads, as a machine with four cores has, the 1.2 GB CSV with
-  1000 columns 7.5 -> 6.2 seconds and the 2.5 GB wide CSV 3.7 -> 3.2; with six, where
-  reading the file is the bound, 3% faster and 8% less CPU time on the 1000-column CSV.
-  The Parquet bytes are the same.
-- Faster on JSON files: the thread that makes the rows also makes each charge item's
-  records, while the next items are read. A 229 MB JSON 1.25 -> 1.02 seconds, a 96 MB one
-  0.54 -> 0.44, and 14-20% on five other JSON files of 40-310 MB; with the
-  `examples/payer-names` config 6-17%. Peak memory is 1-15 MB higher and CPU time 6-35%,
-  CSV files are as before, and the Parquet bytes are the same.
+- Faster, with the same Parquet bytes: the records are made on a thread of their own, the
+  column values are made and encoded on two to six threads, a column that reads only the
+  charge is made once for all its payers, and JSON is read by a reader of its own. Against
+  0.1.3: a 1 GB tall CSV 4.3 -> 2.7 seconds, the 2.5 GB wide CSV 4.6 -> 2.3, a 1.2 GB CSV
+  with 1000 columns 9.8 -> 3.2, a 229 MB JSON 1.4 -> 0.7; with the `examples/payer-names`
+  config the tall CSV 3.5 -> 2.7 and the JSON 1.3 -> 0.7. CPU time is up to a third higher
+  on CSV files.
+- The release binaries are built with thin LTO and one codegen unit: 22 MB instead of 27.
 - A JSON charge item's records stay in one plugin call: a call ends before an item that
-  does not fit in 512, and an item with more records than that is a call of its own (a
-  call had up to 512 records, cut anywhere).
-- JSON syntax errors say what was expected and what was found, at the start of the token
-  out of place: `line 1, column 6: expected ':', found '1'` for `{"a" 1}` (it was
-  `Unexpected NUMBER (1) in state COLON` at the token's end, in the terms of the
-  JavaScript parser the CMS validator uses). `the top-level value is not an object` and
-  `standard_charge_information is not an array` are as before.
-- Faster on JSON files: the file is read by a reader of its own instead of a tokenizer and a
-  token parser. A 229 MB JSON 1.01 -> 0.79 seconds, a 96 MB one 0.44 -> 0.38, and 8-19% on
-  five other JSON files of 40-310 MB; with the `examples/payer-names` config 2-4%. The
-  Parquet bytes are the same.
-- Faster on CSV files: the main thread only reads and splits the rows, and a thread of its
-  own makes their records, as it does a JSON file's (so that the thread calling plugins
-  does not). A 1 GB tall CSV 3.30 -> 2.75 seconds, a 1.3 GB one 5.77 -> 4.60, the 2.5 GB
-  wide CSV 2.70 -> 2.33, the 1.2 GB CSV with 1000 columns 3.70 -> 3.18; a 229 MB JSON with
-  the `examples/payer-names` config 1.00 -> 0.84. CSV files with plugins are as before.
-  CPU time is 13-21% higher on CSV files, peak memory up to 6 MB higher. JSON files
-  without plugins took 5-10% longer in this build, a matter of code layout: built with
-  branches kept within 32-byte boundaries, the two builds are even. The Parquet bytes are
-  the same.
-- Faster on JSON files: the thread that makes a batch's records also takes its charge
-  items apart for reuse, unless the next batch is read already; then the reading thread
-  does it, as before. A 229 MB JSON 0.86 -> 0.81 seconds, a 96 MB one 0.40 -> 0.38, two of
-  301 and 310 MB 5-6%; with the `examples/payer-names` config 5-6%. A 161 MB JSON with
-  about one record per charge item, where the records thread is the bound, 1.05 -> 1.07
-  (0.82 -> 0.84 with the config; even when built with branches kept within 32-byte
-  boundaries). The Parquet bytes are the same.
-- A JSON charge item's description and codes move into the record of its last standard
-  charge instead of being copied for it: 13% faster on the 161 MB JSON with about one
-  record per charge item, 12% with the `examples/payer-names` config, other JSON files
-  as before. The Parquet bytes are the same.
+  does not fit in 512, and an item with more records than that is a call of its own.
+- JSON syntax errors say what was expected and what was found, at the start of the token:
+  `line 1, column 6: expected ':', found '1'` for `{"a" 1}` (was `Unexpected NUMBER (1) in
+  state COLON`).
 
 ### Fixed
 
